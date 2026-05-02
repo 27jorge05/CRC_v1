@@ -7,113 +7,93 @@
  * GitHub    : 27jorge05
  *
  * Descripcion:
- *   Motor de verificacion de integridad CRC-32 (polinomio IEEE 802.3,
- *   0xEDB88320 reflejado) con buffer FIFO de 16 bytes. El motor procesa
- *   4 bits por ciclo de reloj (2 ciclos por byte) usando logica
- *   combinacional desenrollada (sin funciones ni loops).
+ *   Motor CRC-32 (IEEE 802.3, polinomio 0xEDB88320 reflejado)
+ *   con buffer FIFO de 16 bytes y visualizacion VGA 640x480.
+ *   Sync VGA integrado directamente — un solo dominio de reloj.
  *
- *   Salida VGA 640x480 @ 60Hz que muestra en tiempo real:
- *     - Barra de ocupacion del buffer FIFO
- *     - Indicadores de estado FSM (IDLE/PROCESS/FINALIZE/DONE)
- *     - Indicadores IRQ y Enable
- *     - Grid de 32 bits mostrando el valor actual del registro CRC
- *     - Linea scanner animada
+ * Pines:
+ *   ui_in[0]   = wr       escribe uio_in en FIFO
+ *   ui_in[1]   = rd       habilita lectura de registro por uio
+ *   ui_in[5:2] = addr     seleccion de registro (0=status, 1-4=CRC bytes)
+ *   ui_in[6]   = enable   habilita motor CRC
+ *   ui_in[7]   = rst_crc  reset suave del motor
+ *   uio[7:0]   = data     bus bidireccional
  *
- * Interfaz de pines:
- *   ui_in[0]   = wr       — escribe uio_in en FIFO (pulso alto)
- *   ui_in[1]   = rd       — habilita salida de registro por uio_out
- *   ui_in[5:2] = addr     — seleccion de registro a leer
- *                           0 = status {irq, fifo_count}
- *                           1 = CRC byte 0 (LSB)
- *                           2 = CRC byte 1
- *                           3 = CRC byte 2
- *                           4 = CRC byte 3 (MSB)
- *   ui_in[6]   = enable   — habilita el motor CRC
- *   ui_in[7]   = rst_crc  — reset suave del motor (sin reset global)
- *   uio[7:0]   = data     — bus bidireccional: entrada al escribir,
- *                           salida al leer registros CRC
- *
- * Arquitectura interna:
- *   - FIFO circular de 16 bytes (wr_ptr / rd_ptr de 4 bits)
- *   - CRC-32 desenrollado: 4 etapas combinacionales por ciclo
- *     Ciclo A: XOR con byte + pasos 0-3
- *     Ciclo B: pasos 4-7 (sin nuevo XOR)
- *   - FSM de 4 estados: IDLE -> PROCESS -> FINALIZE -> DONE
- *   - Divisor de reloj para animacion VGA (sin segundo dominio)
- *   - Un unico dominio de reloj: clk 25MHz
- *
- * Restricciones Tiny Tapeout:
- *   - Tile 1x1 (~1400 celdas disponibles)
+ * Restricciones Tiny Tapeout tile 1x1:
+ *   - Un solo dominio de reloj (clk 25MHz)
  *   - Sin Metal 5
- *   - Un solo dominio de reloj
- *   - 24 pines I/O (8 in + 8 out + 8 bidir)
+ *   - Sin modulos externos (sync integrado)
  */
 
 `default_nettype none
 
 module tt_um_27jorge05_crc_fifo(
-  input  wire [7:0] ui_in,    // Entradas dedicadas
-  output wire [7:0] uo_out,   // Salidas dedicadas
-  input  wire [7:0] uio_in,   // IOs: camino de entrada
-  output wire [7:0] uio_out,  // IOs: camino de salida
-  output wire [7:0] uio_oe,   // IOs: habilitacion (1=salida, 0=entrada)
-  input  wire       ena,      // Siempre 1 cuando el diseno esta activo
-  input  wire       clk,      // Reloj principal 25 MHz
-  input  wire       rst_n     // Reset activo-bajo
+  input  wire [7:0] ui_in,
+  output wire [7:0] uo_out,
+  input  wire [7:0] uio_in,
+  output wire [7:0] uio_out,
+  output wire [7:0] uio_oe,
+  input  wire       ena,
+  input  wire       clk,
+  input  wire       rst_n
 );
 
   // ==========================================================
-  // Senales VGA internas
+  // VGA timing — integrado, sin modulo externo
+  // 640x480 @ 60Hz con reloj de 25MHz
+  // H total: 800 ciclos (640 visible + 160 blanking)
+  // V total: 525 lineas (480 visible + 45 blanking)
   // ==========================================================
-  wire hsync;
-  wire vsync;
-  wire video_active;
-  wire [9:0] pix_x;
-  wire [9:0] pix_y;
+  reg [9:0] h_count; // contador horizontal 0-799
+  reg [9:0] v_count; // contador vertical   0-524
+
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      h_count <= 10'b0;
+      v_count <= 10'b0;
+    end else begin
+      if (h_count == 10'd799) begin
+        h_count <= 10'b0;
+        if (v_count == 10'd524)
+          v_count <= 10'b0;
+        else
+          v_count <= v_count + 10'd1;
+      end else begin
+        h_count <= h_count + 10'd1;
+      end
+    end
+  end
+
+  // Senales VGA derivadas de los contadores
+  wire hsync        = ~(h_count >= 10'd656 && h_count < 10'd752);
+  wire vsync        = ~(v_count >= 10'd490 && v_count < 10'd492);
+  wire video_active = (h_count < 10'd640) && (v_count < 10'd480);
+  wire [9:0] pix_x  = h_count;
+  wire [9:0] pix_y  = v_count;
+
   wire [1:0] R;
   wire [1:0] G;
   wire [1:0] B;
 
-  // TinyVGA PMOD — orden de bits fijo por el conector fisico
+  // TinyVGA PMOD — orden fijo por conector fisico
   assign uo_out = {hsync, B[0], G[0], R[0], vsync, B[1], G[1], R[1]};
 
   // ==========================================================
-  // Decodificacion de pines de control
+  // Pines de control
   // ==========================================================
-  wire        wr      = ui_in[0]; // write strobe
-  wire        rd      = ui_in[1]; // read strobe
-  wire [3:0]  addr    = ui_in[5:2]; // direccion de registro
-  wire        enable  = ui_in[6]; // habilita motor CRC
-  wire        rst_crc = ui_in[7]; // reset suave del motor
+  wire        wr      = ui_in[0];
+  wire        rd      = ui_in[1];
+  wire [3:0]  addr    = ui_in[5:2];
+  wire        enable  = ui_in[6];
+  wire        rst_crc = ui_in[7];
 
-  // Bus bidireccional uio
   reg [7:0] uio_out_reg;
   reg [7:0] uio_oe_reg;
   assign uio_out = uio_out_reg;
   assign uio_oe  = uio_oe_reg;
 
   // ==========================================================
-  // Generador HSync/VSync
-  // Modulo externo — no modificar
-  // ==========================================================
-  hvsync_generator hvsync_gen(
-    .clk(clk),
-    .reset(~rst_n),
-    .hsync(hsync),
-    .vsync(vsync),
-    .display_on(video_active),
-    .hpos(pix_x),
-    .vpos(pix_y)
-  );
-
-  // ==========================================================
-  // FIFO circular de 16 bytes
-  //
-  // Estructura: array de 16 registros de 8 bits
-  // Punteros  : wr_ptr (escritura) y rd_ptr (lectura), 4 bits c/u
-  // Lleno     : wr_ptr + 1 == rd_ptr
-  // Vacio     : wr_ptr == rd_ptr
-  // Ocupacion : wr_ptr - rd_ptr (aritmetica modular 4 bits)
+  // FIFO circular 16 bytes
   // ==========================================================
   reg [7:0] fifo [0:15];
   reg [3:0] wr_ptr;
@@ -123,7 +103,6 @@ module tt_um_27jorge05_crc_fifo(
   wire       fifo_full  = ((wr_ptr + 4'd1) == rd_ptr);
   wire [3:0] fifo_count = wr_ptr - rd_ptr;
 
-  // Escritura en FIFO
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n || rst_crc) begin
       wr_ptr <= 4'b0;
@@ -134,75 +113,46 @@ module tt_um_27jorge05_crc_fifo(
   end
 
   // ==========================================================
-  // Motor CRC-32 — logica combinacional desenrollada
-  //
-  // Polinomio reflejado IEEE 802.3: 0xEDB88320
-  // Equivale al polinomio normal 0x04C11DB7 procesado LSB-first
-  //
-  // Cada "paso" CRC es:
-  //   si bit[0] == 1: crc = (crc >> 1) XOR 0xEDB88320
-  //   si bit[0] == 0: crc = (crc >> 1)
-  //
-  // Se aplican 4 pasos por ciclo de reloj:
-  //   Ciclo A (half=0): entrada = crc_reg XOR byte_actual
-  //                     aplica pasos 0,1,2,3 -> resultado a3
-  //   Ciclo B (half=1): entrada = crc_reg (ya tiene XOR)
-  //                     aplica pasos 4,5,6,7 -> resultado b3
-  //   Total: 8 pasos = 1 byte completo en 2 ciclos
+  // CRC-32 combinacional desenrollado
+  // Polinomio reflejado 0xEDB88320 (IEEE 802.3)
+  // Ciclo A: XOR byte + pasos 0-3
+  // Ciclo B: pasos 4-7 sin nuevo XOR
   // ==========================================================
+  wire [31:0] crc_in_a = crc_reg ^ {24'b0, fifo[rd_ptr]};
+  wire [31:0] crc_in_b = crc_reg;
 
-  // Entradas de cada cadena combinacional
-  wire [31:0] crc_in_a = crc_reg ^ {24'b0, fifo[rd_ptr]}; // ciclo A
-  wire [31:0] crc_in_b = crc_reg;                          // ciclo B
+  wire [31:0] a0 = crc_in_a[0] ? (crc_in_a >> 1) ^ 32'hEDB88320 : (crc_in_a >> 1);
+  wire [31:0] a1 = a0[0]       ? (a0       >> 1) ^ 32'hEDB88320 : (a0       >> 1);
+  wire [31:0] a2 = a1[0]       ? (a1       >> 1) ^ 32'hEDB88320 : (a1       >> 1);
+  wire [31:0] a3 = a2[0]       ? (a2       >> 1) ^ 32'hEDB88320 : (a2       >> 1);
 
-  // Cadena A — pasos 0 al 3
-  wire [31:0] a0 = crc_in_a[0] ? (crc_in_a >> 1) ^ 32'hEDB88320
-                                : (crc_in_a >> 1);
-  wire [31:0] a1 = a0[0]       ? (a0       >> 1) ^ 32'hEDB88320
-                                : (a0       >> 1);
-  wire [31:0] a2 = a1[0]       ? (a1       >> 1) ^ 32'hEDB88320
-                                : (a1       >> 1);
-  wire [31:0] a3 = a2[0]       ? (a2       >> 1) ^ 32'hEDB88320
-                                : (a2       >> 1);
-
-  // Cadena B — pasos 4 al 7
-  wire [31:0] b0 = crc_in_b[0] ? (crc_in_b >> 1) ^ 32'hEDB88320
-                                : (crc_in_b >> 1);
-  wire [31:0] b1 = b0[0]       ? (b0       >> 1) ^ 32'hEDB88320
-                                : (b0       >> 1);
-  wire [31:0] b2 = b1[0]       ? (b1       >> 1) ^ 32'hEDB88320
-                                : (b1       >> 1);
-  wire [31:0] b3 = b2[0]       ? (b2       >> 1) ^ 32'hEDB88320
-                                : (b2       >> 1);
+  wire [31:0] b0 = crc_in_b[0] ? (crc_in_b >> 1) ^ 32'hEDB88320 : (crc_in_b >> 1);
+  wire [31:0] b1 = b0[0]       ? (b0       >> 1) ^ 32'hEDB88320 : (b0       >> 1);
+  wire [31:0] b2 = b1[0]       ? (b1       >> 1) ^ 32'hEDB88320 : (b1       >> 1);
+  wire [31:0] b3 = b2[0]       ? (b2       >> 1) ^ 32'hEDB88320 : (b2       >> 1);
 
   // ==========================================================
-  // FSM de control — 4 estados
-  //
-  // IDLE     : espera datos en FIFO y enable=1
-  // PROCESS  : procesa bytes (2 ciclos por byte)
-  // FINALIZE : invierte el resultado (estandar IEEE 802.3)
-  // DONE     : resultado listo, espera nueva escritura
+  // FSM — IDLE > PROCESS > FINALIZE > DONE
   // ==========================================================
   localparam IDLE     = 2'b00;
   localparam PROCESS  = 2'b01;
   localparam FINALIZE = 2'b10;
   localparam DONE     = 2'b11;
 
-  reg [31:0] crc_reg;    // registro CRC actual
-  reg        crc_done;   // flag: resultado listo
-  reg        half;       // flag: primera/segunda mitad del byte
-  reg [1:0]  fsm_state;  // estado actual de la FSM
+  reg [31:0] crc_reg;
+  reg        crc_done;
+  reg        half;
+  reg [1:0]  fsm_state;
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n || rst_crc) begin
-      crc_reg   <= 32'hFFFFFFFF; // valor inicial CRC estandar
+      crc_reg   <= 32'hFFFFFFFF;
       crc_done  <= 1'b0;
       rd_ptr    <= 4'b0;
       fsm_state <= IDLE;
       half      <= 1'b0;
     end else begin
       case (fsm_state)
-
         IDLE: begin
           crc_done <= 1'b0;
           half     <= 1'b0;
@@ -211,137 +161,94 @@ module tt_um_27jorge05_crc_fifo(
             fsm_state <= PROCESS;
           end
         end
-
         PROCESS: begin
           if (!fifo_empty) begin
             if (!half) begin
-              // Ciclo A: incorpora byte, procesa bits 0-3
               crc_reg <= a3;
               half    <= 1'b1;
             end else begin
-              // Ciclo B: procesa bits 4-7, avanza puntero
               crc_reg <= b3;
               half    <= 1'b0;
               rd_ptr  <= rd_ptr + 4'd1;
             end
           end else begin
-            // FIFO vaciada — finalizar
             fsm_state <= FINALIZE;
           end
         end
-
         FINALIZE: begin
-          // Inversion final obligatoria segun IEEE 802.3
           crc_reg   <= ~crc_reg;
           crc_done  <= 1'b1;
           fsm_state <= DONE;
         end
-
         DONE: begin
-          // Nueva escritura reinicia el motor
           if (wr && enable) begin
             crc_done  <= 1'b0;
             fsm_state <= IDLE;
           end
         end
-
       endcase
     end
   end
 
   // ==========================================================
-  // Interfaz de lectura de registros
-  // Cuando rd=1 y enable=1, uio_out expone el registro en addr
-  // uio_oe = 0xFF activa los pines como salida
+  // Lectura de registros
   // ==========================================================
-  wire irq = crc_done | fifo_full; // interrupcion: resultado listo o FIFO llena
+  wire irq = crc_done | fifo_full;
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       uio_out_reg <= 8'b0;
       uio_oe_reg  <= 8'b0;
     end else if (rd && enable) begin
-      uio_oe_reg <= 8'hFF; // pines como salida
+      uio_oe_reg <= 8'hFF;
       case (addr)
-        4'd0:    uio_out_reg <= {3'b0, irq, fifo_count}; // status
-        4'd1:    uio_out_reg <= crc_reg[7:0];             // CRC LSB
+        4'd0:    uio_out_reg <= {3'b0, irq, fifo_count};
+        4'd1:    uio_out_reg <= crc_reg[7:0];
         4'd2:    uio_out_reg <= crc_reg[15:8];
         4'd3:    uio_out_reg <= crc_reg[23:16];
-        4'd4:    uio_out_reg <= crc_reg[31:24];           // CRC MSB
+        4'd4:    uio_out_reg <= crc_reg[31:24];
         default: uio_out_reg <= 8'b0;
       endcase
     end else begin
-      uio_oe_reg  <= 8'b0; // pines como entrada (reposo)
+      uio_oe_reg  <= 8'b0;
       uio_out_reg <= 8'b0;
     end
   end
 
   // ==========================================================
-  // Divisor de reloj para animacion VGA
-  //
-  // Un UNICO dominio de reloj — sin posedge vsync
-  // 25MHz / 2^18 = ~95 Hz -> frame_ctr cambia ~95 veces/seg
-  // frame_ctr[5:0] * 8 = scanner se mueve 8px por frame
-  // Rango: 0 a 504 — nunca desborda 10 bits (max 1023)
+  // Animacion VGA — divisor de reloj en dominio clk
+  // 25MHz / 2^18 = ~95Hz
   // ==========================================================
   reg [17:0] clk_div;
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) clk_div <= 18'b0;
     else        clk_div <= clk_div + 18'd1;
   end
-
-  wire [5:0] frame_ctr = clk_div[17:12]; // 6 bits de animacion
+  wire [5:0] frame_ctr = clk_div[17:12];
 
   // ==========================================================
-  // Zonas de visualizacion VGA (640x480 @ 60Hz)
-  //
-  // fila   0- 79 : header azul con degradado verde
-  // fila 100-159 : barra de ocupacion FIFO (verde)
-  // fila 180-239 : indicadores FSM en 4 bloques de 160px
-  //                bloque 0: estado FSM (gris/verde/amarillo/azul)
-  //                bloque 1: IRQ (rojo si activo)
-  //                bloque 2: Enable (cyan si activo)
-  //                bloque 3: rst_crc (magenta si activo)
-  // fila 260-459 : grid de 32 bits del registro CRC
-  //                cada bit ocupa 20px de ancho
-  //                ambar = bit 1, azul oscuro = bit 0
-  // scanner      : linea blanca que baja ~8px por frame
-  // resto        : fondo negro con tono verde tenue (arriba)
+  // Zonas VGA
   // ==========================================================
-
-  // Barra FIFO: ancho = fifo_count * 40px, max = 15*40 = 600 < 640
   wire [9:0] bar_w = {6'b0, fifo_count} * 10'd40;
   wire bar_on = (pix_y >= 10'd100) && (pix_y < 10'd160) &&
                 (pix_x < bar_w) && video_active;
 
-  // Grid CRC: bloques de 20px, margen interior 2px a cada lado
-  wire [4:0] bit_idx = pix_x[9:5];       // que bit del CRC (0-19 visibles)
-  wire [4:0] cell_x  = pix_x[4:0];       // posicion dentro del bloque
+  wire [4:0] bit_idx = pix_x[9:5];
+  wire [4:0] cell_x  = pix_x[4:0];
   wire grid_on = (pix_y >= 10'd260) && (pix_y < 10'd460) &&
                  (pix_x < 10'd640) &&
                  (cell_x >= 5'd2) && (cell_x < 5'd18) &&
                  video_active;
   wire bit_on = crc_reg[bit_idx];
 
-  // Scanner: posicion Y = frame_ctr * 8, max = 63*8 = 504 < 640
   wire [9:0] scan_y = {4'b0, frame_ctr} << 3;
   wire scan_on = (pix_y == scan_y) && video_active;
 
-  // Indicadores FSM: 4 bloques horizontales de 160px
   wire [1:0] fsm_blk = pix_x[9:8];
   wire fsm_on = (pix_y >= 10'd180) && (pix_y < 10'd240) && video_active;
 
   // ==========================================================
-  // Logica de color — combinacional pura (always @(*))
-  // Prioridad de zonas (if-else if en orden):
-  //   1. fuera de zona visible → negro
-  //   2. header
-  //   3. barra FIFO activa
-  //   4. fondo barra FIFO
-  //   5. indicadores FSM
-  //   6. grid CRC
-  //   7. scanner
-  //   8. fondo general
+  // Logica de color combinacional
   // ==========================================================
   reg [1:0] pR, pG, pB;
 
@@ -352,40 +259,32 @@ module tt_um_27jorge05_crc_fifo(
       pR = 2'b00; pG = 2'b00; pB = 2'b00;
 
     end else if (pix_y < 10'd80) begin
-      // Header: azul fijo con degradado verde segun pix_x
-      pR = 2'b00;
-      pG = pix_x[8:7];
-      pB = 2'b11;
+      pR = 2'b00; pG = pix_x[8:7]; pB = 2'b11;
 
     end else if (bar_on) begin
-      // Barra FIFO ocupada — verde brillante
       pR = 2'b00; pG = 2'b11; pB = 2'b01;
 
     end else if ((pix_y >= 10'd100) && (pix_y < 10'd160)) begin
-      // Fondo barra FIFO vacia — verde oscuro
       pR = 2'b00; pG = 2'b01; pB = 2'b00;
 
     end else if (fsm_on) begin
-      // Indicadores FSM — 4 bloques
       case (fsm_blk)
-        2'd0: begin
-          case (fsm_state)
-            IDLE:     begin pR=2'b01; pG=2'b01; pB=2'b01; end // gris
-            PROCESS:  begin pR=2'b00; pG=2'b11; pB=2'b00; end // verde
-            FINALIZE: begin pR=2'b11; pG=2'b11; pB=2'b00; end // amarillo
-            default:  begin pR=2'b00; pG=2'b00; pB=2'b11; end // azul=DONE
-          endcase
-        end
-        2'd1: begin // IRQ
+        2'd0: case (fsm_state)
+          IDLE:     begin pR=2'b01; pG=2'b01; pB=2'b01; end
+          PROCESS:  begin pR=2'b00; pG=2'b11; pB=2'b00; end
+          FINALIZE: begin pR=2'b11; pG=2'b11; pB=2'b00; end
+          default:  begin pR=2'b00; pG=2'b00; pB=2'b11; end
+        endcase
+        2'd1: begin
           pR = irq ? 2'b11 : 2'b01;
           pG = 2'b00; pB = 2'b00;
         end
-        2'd2: begin // Enable
+        2'd2: begin
           pR = 2'b00;
           pG = enable ? 2'b11 : 2'b00;
           pB = enable ? 2'b11 : 2'b00;
         end
-        default: begin // rst_crc
+        default: begin
           pR = rst_crc ? 2'b11 : 2'b00;
           pG = 2'b00;
           pB = rst_crc ? 2'b11 : 2'b00;
@@ -393,7 +292,6 @@ module tt_um_27jorge05_crc_fifo(
       endcase
 
     end else if (grid_on) begin
-      // Grid CRC: ambar si bit=1, azul oscuro si bit=0
       if (bit_on) begin
         pR = 2'b11; pG = 2'b10; pB = 2'b00;
       end else begin
@@ -401,11 +299,9 @@ module tt_um_27jorge05_crc_fifo(
       end
 
     end else if (scan_on) begin
-      // Scanner animado — linea blanca
       pR = 2'b11; pG = 2'b11; pB = 2'b11;
 
     end else begin
-      // Fondo general: negro con leve tono verde en zona alta
       pR = 2'b00;
       pG = (pix_y[7:6] == 2'b00) ? 2'b01 : 2'b00;
       pB = 2'b00;
@@ -416,7 +312,6 @@ module tt_um_27jorge05_crc_fifo(
   assign G = pG;
   assign B = pB;
 
-  // Suprimir warnings de senales no usadas
   wire _unused_ok = &{ena, uio_in};
 
 endmodule
