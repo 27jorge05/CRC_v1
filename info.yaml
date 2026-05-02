@@ -14,7 +14,6 @@ project:
 
   source_files:
     - "project.v"
-    - "hvsync_generator.v"
 
 pinout:
   ui[0]: "wr"
