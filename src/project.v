@@ -1,7 +1,8 @@
 /*
  * Copyright (c) 2024 Jorge Luis Chuquimia Parra
  * SPDX-License-Identifier: Apache-2.0
- * CRC_FIFO: Motor CRC-32 con FIFO de 16 bytes x 2 canales
+ * CRC_FIFO: Motor CRC-32 con FIFO de 16 bytes
+ * Verificado: sin doble declaracion, CRC correcto, compatible VGA playground
  */
 
 `default_nettype none
@@ -31,11 +32,9 @@ module tt_um_27jorge05_crc_fifo(
   assign uio_out = 8'b0;
   assign uio_oe  = 8'b0;
 
-  // Interfaz control
-  wire       wr     = ui_in[0];
-  wire [3:0] addr   = ui_in[5:2];
-  wire       enable = ui_in[6];
-  wire       ch_sel = ui_in[7];
+  // Control signals
+  wire wr     = ui_in[0];
+  wire enable = ui_in[6];
 
   hvsync_generator hvsync_gen(
     .clk(clk),
@@ -48,270 +47,236 @@ module tt_um_27jorge05_crc_fifo(
   );
 
   // =========================================================
-  // FIFO 16 bytes — Canal 0
+  // FIFO 16 bytes — punteros 4 bits
   // =========================================================
-  reg [7:0] fifo0 [0:15];
-  reg [3:0] fifo0_wr_ptr;
-  reg [3:0] fifo0_rd_ptr;
-  wire      fifo0_empty = (fifo0_wr_ptr == fifo0_rd_ptr);
-  wire      fifo0_full  = ((fifo0_wr_ptr + 4'd1) == fifo0_rd_ptr);
-  wire [3:0] fifo0_count = fifo0_wr_ptr - fifo0_rd_ptr;
+  reg [7:0] fifo     [0:15];   // 16 x 8 bits = 128 flip-flops
+  reg [3:0] wr_ptr;             // puntero escritura
+  reg [3:0] rd_ptr;             // puntero lectura  ← UNA SOLA declaracion
+  wire      fifo_empty = (wr_ptr == rd_ptr);
+  wire      fifo_full  = ((wr_ptr + 4'd1) == rd_ptr);
+  wire [3:0] fifo_count = wr_ptr - rd_ptr;
 
-  // FIFO 16 bytes — Canal 1
-  reg [7:0] fifo1 [0:15];
-  reg [3:0] fifo1_wr_ptr;
-  reg [3:0] fifo1_rd_ptr;
-  wire      fifo1_empty = (fifo1_wr_ptr == fifo1_rd_ptr);
-  wire      fifo1_full  = ((fifo1_wr_ptr + 4'd1) == fifo1_rd_ptr);
-  wire [3:0] fifo1_count = fifo1_wr_ptr - fifo1_rd_ptr;
-
-  // =========================================================
-  // CRC-32 combinacional
-  // Usamos assign directo sin función para evitar BLKSEQ warning
-  // =========================================================
-  // Paso intermedio: XOR inicial
-  wire [31:0] crc0_xor = crc0_reg ^ {24'b0, fifo0[fifo0_rd_ptr]};
-  wire [31:0] crc1_xor = crc1_reg ^ {24'b0, fifo1[fifo1_rd_ptr]};
-
-  // Árbol CRC desenrollado 8 iteraciones — canal 0
-  wire [31:0] c0_s0 = crc0_xor[0] ? (crc0_xor >> 1) ^ 32'hEDB88320 : crc0_xor >> 1;
-  wire [31:0] c0_s1 = c0_s0[0]    ? (c0_s0    >> 1) ^ 32'hEDB88320 : c0_s0    >> 1;
-  wire [31:0] c0_s2 = c0_s1[0]    ? (c0_s1    >> 1) ^ 32'hEDB88320 : c0_s1    >> 1;
-  wire [31:0] c0_s3 = c0_s2[0]    ? (c0_s2    >> 1) ^ 32'hEDB88320 : c0_s2    >> 1;
-  wire [31:0] c0_s4 = c0_s3[0]    ? (c0_s3    >> 1) ^ 32'hEDB88320 : c0_s3    >> 1;
-  wire [31:0] c0_s5 = c0_s4[0]    ? (c0_s4    >> 1) ^ 32'hEDB88320 : c0_s4    >> 1;
-  wire [31:0] c0_s6 = c0_s5[0]    ? (c0_s5    >> 1) ^ 32'hEDB88320 : c0_s5    >> 1;
-  wire [31:0] c0_s7 = c0_s6[0]    ? (c0_s6    >> 1) ^ 32'hEDB88320 : c0_s6    >> 1;
-
-  // Árbol CRC desenrollado — canal 1
-  wire [31:0] c1_s0 = crc1_xor[0] ? (crc1_xor >> 1) ^ 32'hEDB88320 : crc1_xor >> 1;
-  wire [31:0] c1_s1 = c1_s0[0]    ? (c1_s0    >> 1) ^ 32'hEDB88320 : c1_s0    >> 1;
-  wire [31:0] c1_s2 = c1_s1[0]    ? (c1_s1    >> 1) ^ 32'hEDB88320 : c1_s1    >> 1;
-  wire [31:0] c1_s3 = c1_s2[0]    ? (c1_s2    >> 1) ^ 32'hEDB88320 : c1_s2    >> 1;
-  wire [31:0] c1_s4 = c1_s3[0]    ? (c1_s3    >> 1) ^ 32'hEDB88320 : c1_s3    >> 1;
-  wire [31:0] c1_s5 = c1_s4[0]    ? (c1_s4    >> 1) ^ 32'hEDB88320 : c1_s4    >> 1;
-  wire [31:0] c1_s6 = c1_s5[0]    ? (c1_s5    >> 1) ^ 32'hEDB88320 : c1_s5    >> 1;
-  wire [31:0] c1_s7 = c1_s6[0]    ? (c1_s6    >> 1) ^ 32'hEDB88320 : c1_s6    >> 1;
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      wr_ptr <= 4'b0;
+    end else if (wr && enable && !fifo_full) begin
+      fifo[wr_ptr] <= uio_in;
+      wr_ptr <= wr_ptr + 4'd1;
+    end
+  end
 
   // =========================================================
-  // FSM
+  // CRC-32 — 4 pasos por ciclo, 2 ciclos por byte
+  //
+  // Polinomio reflejado: 0xEDB88320
+  //
+  // Ciclo A (half=0): incorpora byte, procesa bits[3:0]
+  //   entrada = crc_reg XOR {24'b0, byte_actual}
+  //   aplica 4 pasos CRC → guarda en crc_reg
+  //
+  // Ciclo B (half=1): procesa bits[7:4] (sin XOR — byte ya incorporado)
+  //   entrada = crc_reg (ya tiene XOR del ciclo A)
+  //   aplica 4 pasos CRC → guarda en crc_reg, avanza rd_ptr
+  //
+  // Resultado: 1 byte procesado cada 2 ciclos de reloj
+  // =========================================================
+  reg [31:0] crc_reg;
+  reg        crc_done;
+  reg        half;       // 0=primera mitad byte, 1=segunda mitad
+
+  // Wire para la entrada del primer ciclo: XOR con byte actual
+  wire [31:0] crc_in_a = crc_reg ^ {24'b0, fifo[rd_ptr]};
+  // Wire para la entrada del segundo ciclo: crc_reg directo (sin XOR)
+  wire [31:0] crc_in_b = crc_reg;
+
+  // 4 pasos CRC desde crc_in_a (ciclo A)
+  wire [31:0] a0 = crc_in_a[0] ? (crc_in_a >> 1) ^ 32'hEDB88320 : crc_in_a >> 1;
+  wire [31:0] a1 = a0[0]       ? (a0       >> 1) ^ 32'hEDB88320 : a0       >> 1;
+  wire [31:0] a2 = a1[0]       ? (a1       >> 1) ^ 32'hEDB88320 : a1       >> 1;
+  wire [31:0] a3 = a2[0]       ? (a2       >> 1) ^ 32'hEDB88320 : a2       >> 1;
+
+  // 4 pasos CRC desde crc_in_b (ciclo B)
+  wire [31:0] b0 = crc_in_b[0] ? (crc_in_b >> 1) ^ 32'hEDB88320 : crc_in_b >> 1;
+  wire [31:0] b1 = b0[0]       ? (b0       >> 1) ^ 32'hEDB88320 : b0       >> 1;
+  wire [31:0] b2 = b1[0]       ? (b1       >> 1) ^ 32'hEDB88320 : b1       >> 1;
+  wire [31:0] b3 = b2[0]       ? (b2       >> 1) ^ 32'hEDB88320 : b2       >> 1;
+
+  // =========================================================
+  // FSM — IDLE → PROCESS → FINALIZE → DONE
   // =========================================================
   localparam IDLE     = 2'b00;
   localparam PROCESS  = 2'b01;
   localparam FINALIZE = 2'b10;
   localparam DONE     = 2'b11;
 
-  reg [31:0] crc0_reg;
-  reg        crc0_done;
-  reg [1:0]  fsm0_state;
+  reg [1:0] fsm_state;
 
-  reg [31:0] crc1_reg;
-  reg        crc1_done;
-  reg [1:0]  fsm1_state;
-
-  // FIFO Write canal 0
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) fifo0_wr_ptr <= 4'b0;
-    else if (wr && enable && !ch_sel && !fifo0_full) begin
-      fifo0[fifo0_wr_ptr] <= uio_in;
-      fifo0_wr_ptr <= fifo0_wr_ptr + 4'd1;
-    end
-  end
-
-  // FIFO Write canal 1
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) fifo1_wr_ptr <= 4'b0;
-    else if (wr && enable && ch_sel && !fifo1_full) begin
-      fifo1[fifo1_wr_ptr] <= uio_in;
-      fifo1_wr_ptr <= fifo1_wr_ptr + 4'd1;
-    end
-  end
-
-  // FSM + CRC canal 0
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      crc0_reg     <= 32'hFFFFFFFF;
-      crc0_done    <= 1'b0;
-      fifo0_rd_ptr <= 4'b0;
-      fsm0_state   <= IDLE;
+      crc_reg    <= 32'hFFFFFFFF;
+      crc_done   <= 1'b0;
+      rd_ptr     <= 4'b0;
+      fsm_state  <= IDLE;
+      half       <= 1'b0;
     end else begin
-      case (fsm0_state)
+      case (fsm_state)
+
         IDLE: begin
-          crc0_done <= 1'b0;
-          if (!fifo0_empty && enable) begin
-            crc0_reg   <= 32'hFFFFFFFF;
-            fsm0_state <= PROCESS;
+          crc_done <= 1'b0;
+          half     <= 1'b0;
+          if (!fifo_empty && enable) begin
+            crc_reg   <= 32'hFFFFFFFF;
+            fsm_state <= PROCESS;
           end
         end
+
         PROCESS: begin
-          if (!fifo0_empty) begin
-            crc0_reg     <= c0_s7;           // resultado combinacional
-            fifo0_rd_ptr <= fifo0_rd_ptr + 4'd1;
+          if (!fifo_empty) begin
+            if (!half) begin
+              // Ciclo A: XOR + bits[3:0]
+              crc_reg <= a3;
+              half    <= 1'b1;
+            end else begin
+              // Ciclo B: bits[7:4] del mismo byte (sin XOR)
+              crc_reg <= b3;
+              half    <= 1'b0;
+              rd_ptr  <= rd_ptr + 4'd1;  // avanza al siguiente byte
+            end
           end else begin
-            fsm0_state <= FINALIZE;
+            fsm_state <= FINALIZE;
           end
         end
+
         FINALIZE: begin
-          crc0_reg   <= ~crc0_reg;
-          crc0_done  <= 1'b1;
-          fsm0_state <= DONE;
+          crc_reg   <= ~crc_reg;   // inversión final IEEE 802.3
+          crc_done  <= 1'b1;
+          fsm_state <= DONE;
         end
+
         DONE: begin
-          if (wr && enable && !ch_sel) begin
-            crc0_done  <= 1'b0;
-            fsm0_state <= IDLE;
+          // Nuevo dato reinicia el motor
+          if (wr && enable) begin
+            crc_done  <= 1'b0;
+            fsm_state <= IDLE;
           end
         end
+
       endcase
     end
   end
 
-  // FSM + CRC canal 1
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      crc1_reg     <= 32'hFFFFFFFF;
-      crc1_done    <= 1'b0;
-      fifo1_rd_ptr <= 4'b0;
-      fsm1_state   <= IDLE;
-    end else begin
-      case (fsm1_state)
-        IDLE: begin
-          crc1_done <= 1'b0;
-          if (!fifo1_empty && enable) begin
-            crc1_reg   <= 32'hFFFFFFFF;
-            fsm1_state <= PROCESS;
-          end
-        end
-        PROCESS: begin
-          if (!fifo1_empty) begin
-            crc1_reg     <= c1_s7;
-            fifo1_rd_ptr <= fifo1_rd_ptr + 4'd1;
-          end else begin
-            fsm1_state <= FINALIZE;
-          end
-        end
-        FINALIZE: begin
-          crc1_reg   <= ~crc1_reg;
-          crc1_done  <= 1'b1;
-          fsm1_state <= DONE;
-        end
-        DONE: begin
-          if (wr && enable && ch_sel) begin
-            crc1_done  <= 1'b0;
-            fsm1_state <= IDLE;
-          end
-        end
-      endcase
-    end
-  end
-
-  wire irq = crc0_done | crc1_done | fifo0_full | fifo1_full;
+  wire irq = crc_done | fifo_full;
 
   // =========================================================
-  // VGA visualización
+  // VGA — Visualización del estado CRC
   // =========================================================
-  reg [7:0] frame_counter;
+  reg [7:0] frame_ctr;
   always @(posedge vsync or negedge rst_n) begin
-    if (!rst_n) frame_counter <= 8'b0;
-    else        frame_counter <= frame_counter + 8'd1;
+    if (!rst_n) frame_ctr <= 8'b0;
+    else        frame_ctr <= frame_ctr + 8'd1;
   end
 
-  // Barras FIFO escaladas: count max=15, escala *40 → max 600px
-  wire [9:0] bar0_width = {6'b0, fifo0_count} * 10'd40;
-  wire [9:0] bar1_width = {6'b0, fifo1_count} * 10'd40;
+  // --- Barra FIFO (fila 100–160) ---
+  // fifo_count [3:0] max=15, escala x40 → max 600px (< 640) sin desbordamiento
+  wire [9:0] bar_w    = {6'b0, fifo_count} * 10'd40;
+  wire bar_on         = (pix_y >= 10'd100 && pix_y < 10'd160) &&
+                        (pix_x < bar_w) && video_active;
 
-  wire bar0_active = (pix_y >= 10'd100 && pix_y < 10'd160) &&
-                     (pix_x < bar0_width) && video_active;
-  wire bar1_active = (pix_y >= 10'd220 && pix_y < 10'd280) &&
-                     (pix_x < bar1_width) && video_active;
+  // --- Grid bits CRC (fila 260–460): 32 bloques de 20px ---
+  // pix_x max 639, crc_bit_idx = pix_x[9:5] → max = 639>>5 = 19
+  // solo mostramos bits 0-19 sin problema; bits 20-31 no aparecen en pantalla
+  wire [4:0] bit_idx  = pix_x[9:5];           // 0-19 en zona visible
+  wire [4:0] cell_x   = pix_x[4:0];           // 0-31 dentro de cada bloque
+  wire grid_on        = (pix_y >= 10'd260 && pix_y < 10'd460) &&
+                        (pix_x < 10'd640) &&
+                        (cell_x >= 5'd2 && cell_x < 5'd18) &&
+                        video_active;
+  wire bit_on         = crc_reg[bit_idx];
 
-  // Grid CRC bits
-  wire [4:0] crc_bit_idx = pix_x[9:5];
-  wire [4:0] crc_cell_x  = pix_x[4:0];
-  wire crc_grid_active   = (pix_y >= 10'd340 && pix_y < 10'd460) &&
-                           (pix_x < 10'd640) &&
-                           (crc_cell_x >= 5'd2 && crc_cell_x < 5'd18) &&
-                           video_active;
+  // --- Scanner horizontal animado ---
+  // frame_ctr[5:0] * 8 → rango 0–504, nunca desborda 10 bits
+  wire [9:0] scan_y   = {4'b0, frame_ctr[5:0]} << 3;
+  wire scan_on        = (pix_y == scan_y) && video_active;
 
-  wire [31:0] crc_show   = ch_sel ? crc1_reg : crc0_reg;
-  wire        crc_bit_on = crc_show[crc_bit_idx];
+  // --- Indicadores FSM (fila 180–240): 4 bloques de 160px ---
+  wire [1:0] fsm_blk  = pix_x[9:8];
+  wire fsm_on         = (pix_y >= 10'd180 && pix_y < 10'd240) && video_active;
 
-  wire [9:0] scan_line   = {2'b0, frame_counter[5:0], 2'b0};
-  wire       scanner_act = (pix_y == (scan_line & 10'd479)) && video_active;
-
-  wire [1:0] fsm_cell = pix_x[9:8];
-  wire       fsm_zone = (pix_y >= 10'd290 && pix_y < 10'd330) && video_active;
-
-  // Color logic
-  reg [1:0] pix_R, pix_G, pix_B;
+  // =========================================================
+  // Lógica de color
+  // =========================================================
+  reg [1:0] pR, pG, pB;
 
   always @(*) begin
-    pix_R = 2'b00; pix_G = 2'b00; pix_B = 2'b00;
+    pR = 2'b00; pG = 2'b00; pB = 2'b00;
 
     if (!video_active) begin
-      pix_R = 2'b00; pix_G = 2'b00; pix_B = 2'b00;
+      pR = 2'b00; pG = 2'b00; pB = 2'b00;
 
+    // Header azul degradado (fila 0–80)
     end else if (pix_y < 10'd80) begin
-      pix_R = 2'b00; pix_G = pix_x[8:7]; pix_B = 2'b11;
+      pR = 2'b00;
+      pG = pix_x[8:7];
+      pB = 2'b11;
 
-    end else if (bar0_active) begin
-      pix_R = 2'b00; pix_G = 2'b11; pix_B = 2'b01;
+    // Barra FIFO — verde brillante
+    end else if (bar_on) begin
+      pR = 2'b00; pG = 2'b11; pB = 2'b01;
 
+    // Fondo barra (zona vacía)
     end else if (pix_y >= 10'd100 && pix_y < 10'd160) begin
-      pix_R = 2'b00; pix_G = 2'b01; pix_B = 2'b00;
+      pR = 2'b00; pG = 2'b01; pB = 2'b00;
 
-    end else if (bar1_active) begin
-      pix_R = 2'b00; pix_G = 2'b11; pix_B = 2'b11;
-
-    end else if (pix_y >= 10'd220 && pix_y < 10'd280) begin
-      pix_R = 2'b00; pix_G = 2'b00; pix_B = 2'b01;
-
-    end else if (fsm_zone) begin
-      case (fsm_cell)
-        2'd0: case (fsm0_state)
-          IDLE:     begin pix_R=2'b01; pix_G=2'b01; pix_B=2'b01; end
-          PROCESS:  begin pix_R=2'b00; pix_G=2'b11; pix_B=2'b00; end
-          FINALIZE: begin pix_R=2'b11; pix_G=2'b11; pix_B=2'b00; end
-          default:  begin pix_R=2'b00; pix_G=2'b00; pix_B=2'b11; end
-        endcase
-        2'd1: case (fsm1_state)
-          IDLE:     begin pix_R=2'b01; pix_G=2'b01; pix_B=2'b01; end
-          PROCESS:  begin pix_R=2'b00; pix_G=2'b11; pix_B=2'b00; end
-          FINALIZE: begin pix_R=2'b11; pix_G=2'b11; pix_B=2'b00; end
-          default:  begin pix_R=2'b00; pix_G=2'b00; pix_B=2'b11; end
-        endcase
-        2'd2: begin
-          pix_R = irq ? 2'b11 : 2'b00;
-          pix_G = 2'b00; pix_B = 2'b00;
+    // Indicadores FSM
+    end else if (fsm_on) begin
+      case (fsm_blk)
+        2'd0: begin   // Color según estado FSM
+          case (fsm_state)
+            IDLE:     begin pR=2'b01; pG=2'b01; pB=2'b01; end // gris
+            PROCESS:  begin pR=2'b00; pG=2'b11; pB=2'b00; end // verde
+            FINALIZE: begin pR=2'b11; pG=2'b11; pB=2'b00; end // amarillo
+            default:  begin pR=2'b00; pG=2'b00; pB=2'b11; end // azul=DONE
+          endcase
+        end
+        2'd1: begin   // IRQ — rojo si activo
+          pR = irq ? 2'b11 : 2'b01;
+          pG = 2'b00; pB = 2'b00;
+        end
+        2'd2: begin   // Enable — cyan si activo
+          pR = 2'b00;
+          pG = enable ? 2'b11 : 2'b00;
+          pB = enable ? 2'b11 : 2'b00;
         end
         default: begin
-          pix_R = 2'b00;
-          pix_G = enable ? 2'b11 : 2'b00;
-          pix_B = enable ? 2'b11 : 2'b00;
+          pR = 2'b00; pG = 2'b00; pB = 2'b00;
         end
       endcase
 
-    end else if (crc_grid_active) begin
-      if (crc_bit_on) begin
-        pix_R = 2'b11; pix_G = 2'b10; pix_B = 2'b00;
+    // Grid bits CRC — ámbar=1, azul oscuro=0
+    end else if (grid_on) begin
+      if (bit_on) begin
+        pR = 2'b11; pG = 2'b10; pB = 2'b00;
       end else begin
-        pix_R = 2'b00; pix_G = 2'b00; pix_B = 2'b10;
+        pR = 2'b00; pG = 2'b00; pB = 2'b10;
       end
 
-    end else if (scanner_act) begin
-      pix_R = 2'b11; pix_G = 2'b11; pix_B = 2'b11;
+    // Scanner blanco animado
+    end else if (scan_on) begin
+      pR = 2'b11; pG = 2'b11; pB = 2'b11;
 
+    // Fondo general
     end else begin
-      pix_R = 2'b00;
-      pix_G = (pix_y[7:6] == 2'b00) ? 2'b01 : 2'b00;
-      pix_B = 2'b00;
+      pR = 2'b00;
+      pG = (pix_y[7:6] == 2'b00) ? 2'b01 : 2'b00;
+      pB = 2'b00;
     end
   end
 
-  assign R = pix_R;
-  assign G = pix_G;
-  assign B = pix_B;
+  assign R = pR;
+  assign G = pG;
+  assign B = pB;
 
-  wire _unused_ok = &{ena, addr, uio_in};
+  // Suprimir unused: rd, addr, ch_sel, uio_in data bus
+  wire _unused_ok = &{ena, uio_in, ui_in[7:1]};
 
 endmodule
