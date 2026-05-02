@@ -1,9 +1,12 @@
-# Tiny Tapeout project information
 project:
   title:        "CRC_FIFO: Motor CRC-32 con FIFO de 16 bytes"
   author:       "Jorge Luis Chuquimia Parra"
   discord:      ""
-  description:  "CRC-32 engine (IEEE 802.3) with 16-byte FIFO, register read interface and VGA state monitor for edge data integrity verification"
+  description:  >
+    Hardware CRC-32 engine using IEEE 802.3 polynomial with a 16-byte FIFO
+    buffer, bidirectional register read interface, interrupt output, and
+    real-time VGA display showing FIFO occupancy, FSM state transitions,
+    and CRC bit pattern. Designed for edge AI data integrity verification.
   language:     "Verilog"
   clock_hz:     25000000
   tiles:        "1x1"
@@ -14,7 +17,6 @@ project:
     - "hvsync_generator.v"
 
 pinout:
-  # Inputs
   ui[0]: "wr"
   ui[1]: "rd"
   ui[2]: "addr[0]"
@@ -23,7 +25,6 @@ pinout:
   ui[5]: "addr[3]"
   ui[6]: "enable"
   ui[7]: "rst_crc"
-  # Outputs
   uo[0]: "R1"
   uo[1]: "G1"
   uo[2]: "B1"
@@ -32,7 +33,6 @@ pinout:
   uo[5]: "G0"
   uo[6]: "B0"
   uo[7]: "HSync"
-  # Bidirectional — entrada al escribir, salida al leer registros CRC
   uio[0]: "data[0]"
   uio[1]: "data[1]"
   uio[2]: "data[2]"
