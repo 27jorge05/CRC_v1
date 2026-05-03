@@ -8,7 +8,13 @@
  *
  * Descripcion:
  *   Motor CRC-32 (IEEE 802.3, 0xEDB88320) con FIFO de 16 bytes.
- *   Visualizacion VGA en tiempo real del estado del motor.
+ *   Visualizacion VGA 640x480 en tiempo real:
+ *     - Fila   0- 79 : header azul con degradado verde
+ *     - Fila 100-159 : barra de ocupacion FIFO
+ *     - Fila 180-239 : indicadores FSM / IRQ / Enable / rst_crc
+ *     - Fila 260-339 : grid bits 15:0  del CRC (16 celdas de 32px)
+ *     - Fila 360-439 : grid bits 31:16 del CRC (16 celdas de 32px)
+ *     - Scanner      : linea blanca animada (toda la pantalla)
  *   Un solo dominio de reloj (clk). Sin posedge vsync.
  *
  * Pines:
@@ -33,7 +39,9 @@ module tt_um_27jorge05_crc_fifo(
   input  wire       rst_n     // reset_n - low to reset
 );
 
+  // ==========================================================
   // VGA signals
+  // ==========================================================
   wire hsync;
   wire vsync;
   wire [1:0] R;
@@ -47,7 +55,6 @@ module tt_um_27jorge05_crc_fifo(
   assign uo_out = {hsync, B[0], G[0], R[0], vsync, B[1], G[1], R[1]};
 
   // hvsync_generator - modulo externo en hvsync_generator.v
-  // NO modificar este archivo
   hvsync_generator hvsync_gen(
     .clk(clk),
     .reset(~rst_n),
@@ -91,7 +98,7 @@ module tt_um_27jorge05_crc_fifo(
       if (rst_crc) begin
         wr_ptr <= 4'b0;
       end else if (wr && enable && !fifo_full) begin
-        fifo[wr_ptr] <= uio_in;
+        fifo[wr_ptr] <= uio_in;   // uio_in usado aqui, NO va en _unused_ok
         wr_ptr        <= wr_ptr + 4'd1;
       end
     end
@@ -207,73 +214,97 @@ module tt_um_27jorge05_crc_fifo(
 
   // ==========================================================
   // Divisor de reloj para animacion VGA
-  // 25MHz / 2^18 = ~95Hz — SIN posedge vsync
+  // 25MHz / 2^12 = ~6100 incrementos/seg para frame_ctr
+  // frame_ctr wrappea en 60 -> scan_y max = 59*8 = 472 < 480
+  // SIN posedge vsync — un solo dominio de reloj
   // ==========================================================
   reg [17:0] clk_div;
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) clk_div <= 18'b0;
     else        clk_div <= clk_div + 18'd1;
   end
+
   wire [5:0] frame_ctr = clk_div[17:12];
+
+  // Limitar frame_mod a 0-59 para que scan_y nunca supere 472 (< 480)
+  wire [5:0] frame_mod = (frame_ctr >= 6'd60) ? (frame_ctr - 6'd60) : frame_ctr;
+  wire [9:0] scan_y    = {4'b0, frame_mod} << 3;   // max = 59*8 = 472
 
   // ==========================================================
   // Zonas de visualizacion VGA (640x480)
-  // fila   0- 79: header azul con degradado verde
-  // fila 100-159: barra de ocupacion FIFO
-  // fila 180-239: indicadores FSM / IRQ / Enable / rst_crc
-  // fila 260-459: grid 32 bits del registro CRC
-  // scanner:      linea blanca animada
+  //
+  // fila   0- 79 : header azul con degradado verde
+  // fila 100-159 : barra de ocupacion FIFO
+  // fila 180-239 : indicadores FSM / IRQ / Enable / rst_crc
+  // fila 260-339 : grid bits 15:0  del CRC (16 celdas x 32px = 512px)
+  // fila 360-439 : grid bits 31:16 del CRC (16 celdas x 32px = 512px)
+  // scanner      : linea blanca animada (toda la pantalla)
   // ==========================================================
 
-  // Barra FIFO: max 15*40=600px < 640 sin desbordamiento
+  // --- Barra FIFO: max 15*40 = 600px < 640, sin desbordamiento ---
   wire [9:0] bar_w = {6'b0, fifo_count} * 10'd40;
   wire bar_on = (pix_y >= 10'd100) && (pix_y < 10'd160) &&
                 (pix_x < bar_w) && video_active;
 
-  // Grid CRC: 32 bloques de 20px, margen interior 2px
-  wire [4:0] bit_idx = pix_x[9:5];
-  wire [4:0] cell_x  = pix_x[4:0];
-  wire grid_on = (pix_y >= 10'd260) && (pix_y < 10'd460) &&
-                 (pix_x < 10'd640) &&
-                 (cell_x >= 5'd2) && (cell_x < 5'd18) &&
-                 video_active;
-  wire bit_on = crc_reg[bit_idx];
+  // --- Grid CRC: 2 filas de 16 bits, celdas de 32px ---
+  // Fila A: y=260-339 -> bits 15:0
+  // Fila B: y=360-439 -> bits 31:16
+  // pix_x[8:5] = columna 0-15 (32px por celda, 16*32 = 512px < 640)
+  // pix_x[4:0] = posicion dentro de celda (margen interior 2-17px)
+  wire in_grid_r1 = (pix_y >= 10'd260) && (pix_y < 10'd340) && video_active;
+  wire in_grid_r2 = (pix_y >= 10'd360) && (pix_y < 10'd440) && video_active;
+  wire [3:0] col_idx  = pix_x[8:5];                            // columna 0-15
+  wire [4:0] bit_idx  = in_grid_r2 ? (5'd16 + {1'b0, col_idx}) // bits 16-31
+                                   : {1'b0, col_idx};           // bits  0-15
+  wire [4:0] cell_x   = pix_x[4:0];                            // offset en celda
+  wire grid_on = (in_grid_r1 || in_grid_r2) &&
+                 (pix_x < 10'd512) &&                          // solo 16 celdas validas
+                 (cell_x >= 5'd2) && (cell_x < 5'd18);
+  wire bit_on  = crc_reg[bit_idx];
 
-  // Scanner: max 63*8=504px < 512 sin desbordamiento
-  wire [9:0] scan_y = {4'b0, frame_ctr} << 3;
+  // --- Scanner ---
   wire scan_on = (pix_y == scan_y) && video_active;
 
-  // Indicadores FSM: 4 bloques de 160px
+  // --- Indicadores FSM: 4 bloques de 160px (0-159, 160-319, 320-479, 480-639) ---
   wire [1:0] fsm_blk = pix_x[9:8];
   wire fsm_on = (pix_y >= 10'd180) && (pix_y < 10'd240) && video_active;
 
   // ==========================================================
   // Logica de color — combinacional pura, sin latches
+  // Defaults al inicio del always(*) evitan inferencia de latches
   // ==========================================================
   reg [1:0] pR, pG, pB;
 
   always @(*) begin
+    // Defaults — fondo negro fuera de todas las zonas
     pR = 2'b00; pG = 2'b00; pB = 2'b00;
 
     if (!video_active) begin
       pR = 2'b00; pG = 2'b00; pB = 2'b00;
 
     end else if (pix_y < 10'd80) begin
+      // Header: azul solido con degradado verde segun posicion X
       pR = 2'b00; pG = pix_x[8:7]; pB = 2'b11;
 
     end else if (bar_on) begin
+      // Barra FIFO llena: verde brillante con toque azul
       pR = 2'b00; pG = 2'b11; pB = 2'b01;
 
     end else if ((pix_y >= 10'd100) && (pix_y < 10'd160)) begin
+      // Fondo de la barra FIFO (parte vacia): verde oscuro
       pR = 2'b00; pG = 2'b01; pB = 2'b00;
 
     end else if (fsm_on) begin
+      // Bloque 0: color segun estado FSM
+      // Bloque 1: IRQ (rojo si activo)
+      // Bloque 2: Enable (cian si activo)
+      // Bloque 3: rst_crc (magenta si activo)
       case (fsm_blk)
         2'd0: case (fsm_state)
-          IDLE:     begin pR=2'b01; pG=2'b01; pB=2'b01; end
-          PROCESS:  begin pR=2'b00; pG=2'b11; pB=2'b00; end
-          FINALIZE: begin pR=2'b11; pG=2'b11; pB=2'b00; end
-          default:  begin pR=2'b00; pG=2'b00; pB=2'b11; end
+          IDLE:     begin pR=2'b01; pG=2'b01; pB=2'b01; end  // gris
+          PROCESS:  begin pR=2'b00; pG=2'b11; pB=2'b00; end  // verde
+          FINALIZE: begin pR=2'b11; pG=2'b11; pB=2'b00; end  // amarillo
+          default:  begin pR=2'b00; pG=2'b00; pB=2'b11; end  // azul (DONE)
         endcase
         2'd1: begin
           pR = irq ? 2'b11 : 2'b01;
@@ -292,16 +323,19 @@ module tt_um_27jorge05_crc_fifo(
       endcase
 
     end else if (grid_on) begin
+      // Grid CRC: naranja si bit=1, azul oscuro si bit=0
       if (bit_on) begin
-        pR = 2'b11; pG = 2'b10; pB = 2'b00;
+        pR = 2'b11; pG = 2'b10; pB = 2'b00;   // naranja
       end else begin
-        pR = 2'b00; pG = 2'b00; pB = 2'b10;
+        pR = 2'b00; pG = 2'b00; pB = 2'b10;   // azul oscuro
       end
 
     end else if (scan_on) begin
+      // Scanner: linea blanca animada
       pR = 2'b11; pG = 2'b11; pB = 2'b11;
 
     end else begin
+      // Fondo general: toque verde muy tenue en la parte superior
       pR = 2'b00;
       pG = (pix_y[7:6] == 2'b00) ? 2'b01 : 2'b00;
       pB = 2'b00;
@@ -312,7 +346,7 @@ module tt_um_27jorge05_crc_fifo(
   assign G = pG;
   assign B = pB;
 
-  // Suprimir unused
-  wire _unused_ok = &{ena, uio_in};
+  // ena no se usa en logica; uio_in SI se usa (FIFO write), no va aqui
+  wire _unused_ok = &{ena, 1'b0};
 
 endmodule
