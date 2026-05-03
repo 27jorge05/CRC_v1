@@ -8,8 +8,8 @@
  *
  * Descripcion:
  *   Motor CRC-32 (IEEE 802.3, 0xEDB88320) con FIFO de 16 bytes.
- *   1 byte por ciclo de reloj. Un solo dominio de reloj.
- *   hvsync_generator en archivo separado src/hvsync_generator.v
+ *   Visualizacion VGA en tiempo real del estado del motor.
+ *   Un solo dominio de reloj (clk). Sin posedge vsync.
  *
  * Pines:
  *   ui_in[0]   = wr       escribe uio_in en FIFO
@@ -23,24 +23,31 @@
 `default_nettype none
 
 module tt_um_27jorge05_crc_fifo(
-  input  wire [7:0] ui_in,
-  output wire [7:0] uo_out,
-  input  wire [7:0] uio_in,
-  output wire [7:0] uio_out,
-  output wire [7:0] uio_oe,
-  input  wire       ena,
-  input  wire       clk,
-  input  wire       rst_n
+  input  wire [7:0] ui_in,    // Dedicated inputs
+  output wire [7:0] uo_out,   // Dedicated outputs
+  input  wire [7:0] uio_in,   // IOs: Input path
+  output wire [7:0] uio_out,  // IOs: Output path
+  output wire [7:0] uio_oe,   // IOs: Enable path (active high: 0=input, 1=output)
+  input  wire       ena,      // always 1 when the design is powered
+  input  wire       clk,      // clock
+  input  wire       rst_n     // reset_n - low to reset
 );
 
   // VGA signals
-  wire hsync, vsync, video_active;
-  wire [9:0] pix_x, pix_y;
-  wire [1:0] R, G, B;
+  wire hsync;
+  wire vsync;
+  wire [1:0] R;
+  wire [1:0] G;
+  wire [1:0] B;
+  wire video_active;
+  wire [9:0] pix_x;
+  wire [9:0] pix_y;
 
+  // TinyVGA PMOD - orden fijo por conector fisico
   assign uo_out = {hsync, B[0], G[0], R[0], vsync, B[1], G[1], R[1]};
 
-  // hvsync_generator — modulo externo en hvsync_generator.v
+  // hvsync_generator - modulo externo en hvsync_generator.v
+  // NO modificar este archivo
   hvsync_generator hvsync_gen(
     .clk(clk),
     .reset(~rst_n),
@@ -60,6 +67,7 @@ module tt_um_27jorge05_crc_fifo(
   wire        enable  = ui_in[6];
   wire        rst_crc = ui_in[7];
 
+  // Bus uio bidireccional
   reg [7:0] uio_out_reg;
   reg [7:0] uio_oe_reg;
   assign uio_out = uio_out_reg;
@@ -90,8 +98,9 @@ module tt_um_27jorge05_crc_fifo(
   end
 
   // ==========================================================
-  // CRC-32 — 8 pasos combinacionales, 1 byte por ciclo
+  // CRC-32 combinacional — 8 pasos, 1 byte por ciclo
   // Polinomio reflejado 0xEDB88320 (IEEE 802.3)
+  // Cada paso: LSB=1 -> (c>>1) XOR poly; LSB=0 -> (c>>1)
   // ==========================================================
   wire [31:0] crc_in = crc_reg ^ {24'b0, fifo[rd_ptr]};
 
@@ -107,7 +116,8 @@ module tt_um_27jorge05_crc_fifo(
   // ==========================================================
   // FSM — IDLE > PROCESS > FINALIZE > DONE
   // Reset async: negedge rst_n
-  // Reset suave: rst_crc sincrono
+  // Reset suave: rst_crc sincrono (dentro del else)
+  // SIN posedge vsync — un solo dominio de reloj
   // ==========================================================
   localparam IDLE     = 2'b00;
   localparam PROCESS  = 2'b01;
@@ -165,6 +175,11 @@ module tt_um_27jorge05_crc_fifo(
 
   // ==========================================================
   // Lectura de registros via uio
+  // addr 0 = status {3b0, irq, fifo_count}
+  // addr 1 = CRC byte 0 LSB
+  // addr 2 = CRC byte 1
+  // addr 3 = CRC byte 2
+  // addr 4 = CRC byte 3 MSB
   // ==========================================================
   wire irq = crc_done | fifo_full;
 
@@ -191,8 +206,8 @@ module tt_um_27jorge05_crc_fifo(
   end
 
   // ==========================================================
-  // Divisor de reloj para animacion VGA — un solo dominio clk
-  // 25MHz / 2^18 = ~95Hz
+  // Divisor de reloj para animacion VGA
+  // 25MHz / 2^18 = ~95Hz — SIN posedge vsync
   // ==========================================================
   reg [17:0] clk_div;
   always @(posedge clk or negedge rst_n) begin
@@ -202,12 +217,20 @@ module tt_um_27jorge05_crc_fifo(
   wire [5:0] frame_ctr = clk_div[17:12];
 
   // ==========================================================
-  // Zonas VGA
+  // Zonas de visualizacion VGA (640x480)
+  // fila   0- 79: header azul con degradado verde
+  // fila 100-159: barra de ocupacion FIFO
+  // fila 180-239: indicadores FSM / IRQ / Enable / rst_crc
+  // fila 260-459: grid 32 bits del registro CRC
+  // scanner:      linea blanca animada
   // ==========================================================
+
+  // Barra FIFO: max 15*40=600px < 640 sin desbordamiento
   wire [9:0] bar_w = {6'b0, fifo_count} * 10'd40;
   wire bar_on = (pix_y >= 10'd100) && (pix_y < 10'd160) &&
                 (pix_x < bar_w) && video_active;
 
+  // Grid CRC: 32 bloques de 20px, margen interior 2px
   wire [4:0] bit_idx = pix_x[9:5];
   wire [4:0] cell_x  = pix_x[4:0];
   wire grid_on = (pix_y >= 10'd260) && (pix_y < 10'd460) &&
@@ -216,14 +239,16 @@ module tt_um_27jorge05_crc_fifo(
                  video_active;
   wire bit_on = crc_reg[bit_idx];
 
+  // Scanner: max 63*8=504px < 512 sin desbordamiento
   wire [9:0] scan_y = {4'b0, frame_ctr} << 3;
   wire scan_on = (pix_y == scan_y) && video_active;
 
+  // Indicadores FSM: 4 bloques de 160px
   wire [1:0] fsm_blk = pix_x[9:8];
   wire fsm_on = (pix_y >= 10'd180) && (pix_y < 10'd240) && video_active;
 
   // ==========================================================
-  // Logica de color combinacional
+  // Logica de color — combinacional pura, sin latches
   // ==========================================================
   reg [1:0] pR, pG, pB;
 
@@ -287,6 +312,7 @@ module tt_um_27jorge05_crc_fifo(
   assign G = pG;
   assign B = pB;
 
-  wire _unused_ok = &{ena};
+  // Suprimir unused
+  wire _unused_ok = &{ena, uio_in};
 
 endmodule
