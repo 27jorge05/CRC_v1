@@ -1,24 +1,24 @@
+
 # Tiny Tapeout project information
 project:
-  title:        "CRC_FIFO: Motor CRC-32 con FIFO de 16 bytes"
-  author:       "Jorge Luis Chuquimia Parra"
-  discord:      ""
-  description:  >
-    Hardware CRC-32 engine (IEEE 802.3, 0xEDB88320) with 16-byte FIFO,
-    bidirectional register read interface, interrupt output, and real-time
-    VGA display showing FIFO occupancy bar, FSM state, and all 32 CRC bits
-    across two grid rows. Single clock domain at 25 MHz.
-  language:     "Verilog"
-  clock_hz:     25000000
-  tiles:        "1x1"
-  # top_module must start with tt_um_ and include your github username
-  top_module:   "tt_um_27jorge05_crc_fifo"
-  # List each source file separately — also update PROJECT_SOURCES in test/Makefile
+  title:        ""      # Project title
+  author:       ""      # Your name
+  discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
+  description:  ""      # One line description of what your project does
+  language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
+  clock_hz:     25175000       # Clock frequency in Hz (or 0 if not applicable)
+
+  # How many tiles your design occupies? A single tile is about 167x108 uM.
+  tiles: "1x1"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2
+
+  # Your top module name must start with "tt_um_". Make it unique by including your github username:
+  top_module:  "tt_um_27jorge05_crc_fifo"
+  
+  # List your project's source files here. Source files must be in ./src and you must list each source file separately, one per line:
   source_files:
     - "project.v"
     - "hvsync_generator.v"
-
-# The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.
+ 
 pinout:
   # Inputs
   ui[0]: "wr"
@@ -47,6 +47,6 @@ pinout:
   uio[5]: "data[5]"
   uio[6]: "data[6]"
   uio[7]: "data[7]"
-
+ 
 # Do not change!
 yaml_version: 6
