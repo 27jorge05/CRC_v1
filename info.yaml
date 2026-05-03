@@ -1,3 +1,4 @@
+# Tiny Tapeout project information
 project:
   title:        "CRC_FIFO: Motor CRC-32 con FIFO de 16 bytes"
   author:       "Jorge Luis Chuquimia Parra"
@@ -15,7 +16,9 @@ project:
 
   source_files:
     - "project.v"
+    - "hvsync_generator.v"
 
+# The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.
 pinout:
   # Inputs
   ui[0]: "wr"
@@ -35,7 +38,7 @@ pinout:
   uo[5]: "G0"
   uo[6]: "B0"
   uo[7]: "HSync"
-  # Bidirectional
+  # Bidirectional pins
   uio[0]: "data[0]"
   uio[1]: "data[1]"
   uio[2]: "data[2]"
@@ -45,4 +48,5 @@ pinout:
   uio[6]: "data[6]"
   uio[7]: "data[7]"
 
+# Do not change!
 yaml_version: 6
