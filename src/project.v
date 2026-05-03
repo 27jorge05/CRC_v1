@@ -8,8 +8,8 @@
  *
  * Descripcion:
  *   Motor CRC-32 (IEEE 802.3, 0xEDB88320) con FIFO de 16 bytes.
- *   hvsync_generator embebido con reset corregido (negedge rst_n).
  *   1 byte por ciclo de reloj. Un solo dominio de reloj.
+ *   hvsync_generator en archivo separado src/hvsync_generator.v
  *
  * Pines:
  *   ui_in[0]   = wr       escribe uio_in en FIFO
@@ -22,66 +22,6 @@
 
 `default_nettype none
 
-// ==========================================================
-// hvsync_generator embebido — reset corregido a negedge rst_n
-// Parametros VGA 640x480 @ 60Hz, reloj 25MHz
-// ==========================================================
-module hvsync_generator(
-  input  wire clk,
-  input  wire reset,
-  output wire hsync,
-  output wire vsync,
-  output wire display_on,
-  output wire [9:0] hpos,
-  output wire [9:0] vpos
-);
-  parameter H_DISPLAY      = 640;
-  parameter H_FRONT_PORCH  = 16;
-  parameter H_SYNC_PULSE   = 96;
-  parameter H_BACK_PORCH   = 48;
-  parameter H_TOTAL        = H_DISPLAY + H_FRONT_PORCH + H_SYNC_PULSE + H_BACK_PORCH; // 800
-
-  parameter V_DISPLAY      = 480;
-  parameter V_FRONT_PORCH  = 10;
-  parameter V_SYNC_PULSE   = 2;
-  parameter V_BACK_PORCH   = 33;
-  parameter V_TOTAL        = V_DISPLAY + V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH; // 525
-
-  reg [9:0] h_count;
-  reg [9:0] v_count;
-
-  // Un solo always con reset sincrono positivo — igual al original
-  // pero sin crear segundo dominio de reloj
-  always @(posedge clk) begin
-    if (reset) begin
-      h_count <= 10'd0;
-      v_count <= 10'd0;
-    end else begin
-      if (h_count == H_TOTAL - 1) begin
-        h_count <= 10'd0;
-        if (v_count == V_TOTAL - 1)
-          v_count <= 10'd0;
-        else
-          v_count <= v_count + 10'd1;
-      end else begin
-        h_count <= h_count + 10'd1;
-      end
-    end
-  end
-
-  assign hsync      = ~(h_count >= H_DISPLAY + H_FRONT_PORCH &&
-                        h_count <  H_DISPLAY + H_FRONT_PORCH + H_SYNC_PULSE);
-  assign vsync      = ~(v_count >= V_DISPLAY + V_FRONT_PORCH &&
-                        v_count <  V_DISPLAY + V_FRONT_PORCH + V_SYNC_PULSE);
-  assign display_on = (h_count < H_DISPLAY) && (v_count < V_DISPLAY);
-  assign hpos       = h_count;
-  assign vpos       = v_count;
-
-endmodule
-
-// ==========================================================
-// Modulo principal
-// ==========================================================
 module tt_um_27jorge05_crc_fifo(
   input  wire [7:0] ui_in,
   output wire [7:0] uo_out,
@@ -100,7 +40,7 @@ module tt_um_27jorge05_crc_fifo(
 
   assign uo_out = {hsync, B[0], G[0], R[0], vsync, B[1], G[1], R[1]};
 
-  // hvsync instanciado — reset = ~rst_n (activo alto, sincrono)
+  // hvsync_generator — modulo externo en hvsync_generator.v
   hvsync_generator hvsync_gen(
     .clk(clk),
     .reset(~rst_n),
@@ -166,6 +106,8 @@ module tt_um_27jorge05_crc_fifo(
 
   // ==========================================================
   // FSM — IDLE > PROCESS > FINALIZE > DONE
+  // Reset async: negedge rst_n
+  // Reset suave: rst_crc sincrono
   // ==========================================================
   localparam IDLE     = 2'b00;
   localparam PROCESS  = 2'b01;
@@ -249,8 +191,8 @@ module tt_um_27jorge05_crc_fifo(
   end
 
   // ==========================================================
-  // Divisor de reloj para animacion VGA
-  // 25MHz / 2^18 = ~95Hz, un solo dominio clk
+  // Divisor de reloj para animacion VGA — un solo dominio clk
+  // 25MHz / 2^18 = ~95Hz
   // ==========================================================
   reg [17:0] clk_div;
   always @(posedge clk or negedge rst_n) begin
@@ -281,7 +223,7 @@ module tt_um_27jorge05_crc_fifo(
   wire fsm_on = (pix_y >= 10'd180) && (pix_y < 10'd240) && video_active;
 
   // ==========================================================
-  // Logica de color combinacional pura
+  // Logica de color combinacional
   // ==========================================================
   reg [1:0] pR, pG, pB;
 
