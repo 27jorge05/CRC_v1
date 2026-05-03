@@ -4,16 +4,16 @@ project:
   author:       "Jorge Luis Chuquimia Parra"
   discord:      ""
   description:  >
-    Hardware CRC-32 engine using IEEE 802.3 polynomial with a 16-byte
-    FIFO buffer, bidirectional register read interface, interrupt output,
-    and real-time VGA display showing FIFO occupancy, FSM state
-    transitions, and CRC-32 bit pattern. Designed for edge AI data
-    integrity verification. Single clock domain.
+    Hardware CRC-32 engine (IEEE 802.3, 0xEDB88320) with 16-byte FIFO,
+    bidirectional register read interface, interrupt output, and real-time
+    VGA display showing FIFO occupancy bar, FSM state, and all 32 CRC bits
+    across two grid rows. Single clock domain at 25 MHz.
   language:     "Verilog"
   clock_hz:     25000000
   tiles:        "1x1"
+  # top_module must start with tt_um_ and include your github username
   top_module:   "tt_um_27jorge05_crc_fifo"
-
+  # List each source file separately — also update PROJECT_SOURCES in test/Makefile
   source_files:
     - "project.v"
     - "hvsync_generator.v"
@@ -29,7 +29,7 @@ pinout:
   ui[5]: "addr[3]"
   ui[6]: "enable"
   ui[7]: "rst_crc"
-  # Outputs
+  # Outputs — TinyVGA PMOD: {hsync, B[0], G[0], R[0], vsync, B[1], G[1], R[1]}
   uo[0]: "R1"
   uo[1]: "G1"
   uo[2]: "B1"
@@ -38,7 +38,7 @@ pinout:
   uo[5]: "G0"
   uo[6]: "B0"
   uo[7]: "HSync"
-  # Bidirectional pins
+  # Bidirectional — data bus (write: byte to FIFO / read: register value)
   uio[0]: "data[0]"
   uio[1]: "data[1]"
   uio[2]: "data[2]"
