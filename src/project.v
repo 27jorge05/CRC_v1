@@ -7,10 +7,9 @@
  * GitHub    : 27jorge05
  *
  * Descripcion:
- *   Motor CRC-32 (IEEE 802.3, polinomio 0xEDB88320 reflejado)
- *   con buffer FIFO de 16 bytes y visualizacion VGA 640x480.
- *   Procesa 1 byte completo por ciclo de reloj (8 pasos CRC).
- *   Sync VGA integrado — un solo dominio de reloj. Sin modulos externos.
+ *   Motor CRC-32 (IEEE 802.3, 0xEDB88320) con FIFO de 16 bytes.
+ *   hvsync_generator embebido con reset corregido (negedge rst_n).
+ *   1 byte por ciclo de reloj. Un solo dominio de reloj.
  *
  * Pines:
  *   ui_in[0]   = wr       escribe uio_in en FIFO
@@ -19,16 +18,70 @@
  *   ui_in[6]   = enable   habilita motor CRC
  *   ui_in[7]   = rst_crc  reset suave del motor
  *   uio[7:0]   = data     bus bidireccional
- *
- * Restricciones Tiny Tapeout tile 1x1:
- *   - Un solo dominio de reloj (clk 25MHz)
- *   - Sin Metal 5
- *   - Sin modulos externos
- *   - Reset async negedge rst_n + reset suave sincrono rst_crc
  */
 
 `default_nettype none
 
+// ==========================================================
+// hvsync_generator embebido — reset corregido a negedge rst_n
+// Parametros VGA 640x480 @ 60Hz, reloj 25MHz
+// ==========================================================
+module hvsync_generator(
+  input  wire clk,
+  input  wire reset,
+  output wire hsync,
+  output wire vsync,
+  output wire display_on,
+  output wire [9:0] hpos,
+  output wire [9:0] vpos
+);
+  parameter H_DISPLAY      = 640;
+  parameter H_FRONT_PORCH  = 16;
+  parameter H_SYNC_PULSE   = 96;
+  parameter H_BACK_PORCH   = 48;
+  parameter H_TOTAL        = H_DISPLAY + H_FRONT_PORCH + H_SYNC_PULSE + H_BACK_PORCH; // 800
+
+  parameter V_DISPLAY      = 480;
+  parameter V_FRONT_PORCH  = 10;
+  parameter V_SYNC_PULSE   = 2;
+  parameter V_BACK_PORCH   = 33;
+  parameter V_TOTAL        = V_DISPLAY + V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH; // 525
+
+  reg [9:0] h_count;
+  reg [9:0] v_count;
+
+  // Un solo always con reset sincrono positivo — igual al original
+  // pero sin crear segundo dominio de reloj
+  always @(posedge clk) begin
+    if (reset) begin
+      h_count <= 10'd0;
+      v_count <= 10'd0;
+    end else begin
+      if (h_count == H_TOTAL - 1) begin
+        h_count <= 10'd0;
+        if (v_count == V_TOTAL - 1)
+          v_count <= 10'd0;
+        else
+          v_count <= v_count + 10'd1;
+      end else begin
+        h_count <= h_count + 10'd1;
+      end
+    end
+  end
+
+  assign hsync      = ~(h_count >= H_DISPLAY + H_FRONT_PORCH &&
+                        h_count <  H_DISPLAY + H_FRONT_PORCH + H_SYNC_PULSE);
+  assign vsync      = ~(v_count >= V_DISPLAY + V_FRONT_PORCH &&
+                        v_count <  V_DISPLAY + V_FRONT_PORCH + V_SYNC_PULSE);
+  assign display_on = (h_count < H_DISPLAY) && (v_count < V_DISPLAY);
+  assign hpos       = h_count;
+  assign vpos       = v_count;
+
+endmodule
+
+// ==========================================================
+// Modulo principal
+// ==========================================================
 module tt_um_27jorge05_crc_fifo(
   input  wire [7:0] ui_in,
   output wire [7:0] uo_out,
@@ -40,42 +93,23 @@ module tt_um_27jorge05_crc_fifo(
   input  wire       rst_n
 );
 
-  // ==========================================================
-  // VGA timing integrado — 640x480 @ 60Hz, reloj 25MHz
-  // H total 800: 640 visible + 16 front + 96 sync + 48 back
-  // V total 525: 480 visible + 10 front +  2 sync + 33 back
-  // ==========================================================
-  reg [9:0] h_count;
-  reg [9:0] v_count;
-
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      h_count <= 10'd0;
-      v_count <= 10'd0;
-    end else begin
-      if (h_count == 10'd799) begin
-        h_count <= 10'd0;
-        if (v_count == 10'd524)
-          v_count <= 10'd0;
-        else
-          v_count <= v_count + 10'd1;
-      end else begin
-        h_count <= h_count + 10'd1;
-      end
-    end
-  end
-
-  wire hsync        = ~(h_count >= 10'd656 && h_count < 10'd752);
-  wire vsync        = ~(v_count >= 10'd490 && v_count < 10'd492);
-  wire video_active =  (h_count < 10'd640) && (v_count < 10'd480);
-  wire [9:0] pix_x  = h_count;
-  wire [9:0] pix_y  = v_count;
-
-  wire [1:0] R;
-  wire [1:0] G;
-  wire [1:0] B;
+  // VGA signals
+  wire hsync, vsync, video_active;
+  wire [9:0] pix_x, pix_y;
+  wire [1:0] R, G, B;
 
   assign uo_out = {hsync, B[0], G[0], R[0], vsync, B[1], G[1], R[1]};
+
+  // hvsync instanciado — reset = ~rst_n (activo alto, sincrono)
+  hvsync_generator hvsync_gen(
+    .clk(clk),
+    .reset(~rst_n),
+    .hsync(hsync),
+    .vsync(vsync),
+    .display_on(video_active),
+    .hpos(pix_x),
+    .vpos(pix_y)
+  );
 
   // ==========================================================
   // Pines de control
@@ -116,10 +150,8 @@ module tt_um_27jorge05_crc_fifo(
   end
 
   // ==========================================================
-  // CRC-32 combinacional — 8 pasos, 1 byte por ciclo
+  // CRC-32 — 8 pasos combinacionales, 1 byte por ciclo
   // Polinomio reflejado 0xEDB88320 (IEEE 802.3)
-  // Cada paso: LSB=1 → (c>>1) XOR poly; LSB=0 → (c>>1)
-  // Los 8 pasos procesan 1 byte completo en 1 ciclo de reloj
   // ==========================================================
   wire [31:0] crc_in = crc_reg ^ {24'b0, fifo[rd_ptr]};
 
@@ -134,9 +166,6 @@ module tt_um_27jorge05_crc_fifo(
 
   // ==========================================================
   // FSM — IDLE > PROCESS > FINALIZE > DONE
-  // Sin mecanismo half — 1 byte por ciclo
-  // Reset async: negedge rst_n
-  // Reset suave: rst_crc sincrono
   // ==========================================================
   localparam IDLE     = 2'b00;
   localparam PROCESS  = 2'b01;
@@ -161,7 +190,6 @@ module tt_um_27jorge05_crc_fifo(
         fsm_state <= IDLE;
       end else begin
         case (fsm_state)
-
           IDLE: begin
             crc_done <= 1'b0;
             if (!fifo_empty && enable) begin
@@ -169,30 +197,25 @@ module tt_um_27jorge05_crc_fifo(
               fsm_state <= PROCESS;
             end
           end
-
           PROCESS: begin
             if (!fifo_empty) begin
-              // 1 byte completo por ciclo — sin half
               crc_reg <= s7;
               rd_ptr  <= rd_ptr + 4'd1;
             end else begin
               fsm_state <= FINALIZE;
             end
           end
-
           FINALIZE: begin
             crc_reg   <= ~crc_reg;
             crc_done  <= 1'b1;
             fsm_state <= DONE;
           end
-
           DONE: begin
             if (wr && enable) begin
               crc_done  <= 1'b0;
               fsm_state <= IDLE;
             end
           end
-
         endcase
       end
     end
