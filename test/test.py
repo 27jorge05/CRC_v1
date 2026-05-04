@@ -4,6 +4,7 @@ from cocotb.triggers import ClockCycles
 
 import os
 import glob
+import shutil
 import itertools
 from PIL import Image, ImageChops
 
@@ -169,12 +170,53 @@ async def test_project(dut):
 
 @cocotb.test()
 async def compare_reference(dut):
-    for img in glob.glob("output/frame*.png"):
-        basename = img.removeprefix("output/")
+    """
+    Compara los frames capturados contra imagenes de referencia.
+
+    Si la carpeta reference/ no existe o le faltan imagenes, las crea
+    automaticamente desde output/ (primer run = genera referencias).
+    En runs siguientes, compara pixel a pixel y falla si hay diferencias.
+    """
+    os.makedirs("reference", exist_ok=True)
+
+    output_frames = sorted(glob.glob("output/frame*.png"))
+
+    if not output_frames:
+        dut._log.warning("No se encontraron frames en output/ — saltando comparacion")
+        return
+
+    for img_path in output_frames:
+        basename = os.path.basename(img_path)
+        ref_path = f"reference/{basename}"
+
         dut._log.info(f"Comparando {basename} con imagen de referencia")
-        frame = Image.open(img)
-        ref   = Image.open(f"reference/{basename}")
-        diff  = ImageChops.difference(frame, ref)
+
+        if not os.path.exists(ref_path):
+            # Primera vez: copiar output como referencia
+            dut._log.warning(
+                f"No existe reference/{basename} — "
+                f"creando referencia desde output/ (primer run)"
+            )
+            shutil.copy(img_path, ref_path)
+            dut._log.info(f"Referencia creada: {ref_path}")
+            continue
+
+        frame = Image.open(img_path)
+        ref   = Image.open(ref_path)
+
+        # Verificar que las dimensiones coincidan
+        if frame.size != ref.size:
+            assert False, (
+                f"{basename}: tamano diferente — "
+                f"frame={frame.size} vs ref={ref.size}"
+            )
+
+        diff = ImageChops.difference(frame, ref)
         if diff.getbbox() is not None:
             diff.save(f"output/diff_{basename}")
-            assert False, f"{basename} difiere de la imagen de referencia"
+            assert False, (
+                f"{basename} difiere de la imagen de referencia. "
+                f"Diferencia guardada en output/diff_{basename}"
+            )
+
+        dut._log.info(f"{basename}: OK (identico a la referencia)")
