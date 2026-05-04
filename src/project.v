@@ -249,7 +249,7 @@ module tt_um_27jorge05_crc_fifo(
   // pix_x[9:7] = columna 0-7 (80px por celda, 8 celdas = 640px)
   // Indexacion estatica: mux 8:1, no mux 32:1
   // Margen interior: pix_x[6:0] entre 5 y 60
-  wire [2:0] crc_col  = pix_x[9:7];
+  wire [4:0] crc_col  = {2'b0, pix_x[9:7]};  // 5 bits para indexar crc_reg[31:0]
   wire [6:0] crc_cell = pix_x[6:0];
   wire       crc_on   = (pix_y >= 10'd230) && (pix_y < 10'd310) &&
                         (crc_cell >= 7'd5)  && (crc_cell < 7'd65) &&
