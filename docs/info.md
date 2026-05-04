@@ -1,5 +1,4 @@
 <!---
-
 This file is used to generate your project datasheet. Please fill in the information below and delete any unused
 sections.
 
@@ -7,134 +6,189 @@ You can also include images in this folder and reference them in the markdown. E
 512 kb in size, and the combined size of all images must be less than 1 MB.
 -->
 
-# CRC_FIFO: Motor CRC-32 con FIFO de 2 KiB
+# CRC_FIFO: CRC-32 Engine with 8-Byte FIFO and VGA Display
 
 ## How it works
 
-This project implements a CRC-32 integrity verification engine with a 2 KiB internal FIFO buffer,
-designed for edge AI systems where data reliability is critical.
+This project implements a CRC-32 integrity verification engine (IEEE 802.3, polynomial 0xEDB88320)
+with an 8-byte internal FIFO and a real-time VGA display, designed for edge AI systems where data
+reliability is critical.
 
 ### Core architecture
 
-The design processes incoming data bytes through a parallel CRC-32 engine (polynomial 0x04C11DB7,
-the same standard used in Ethernet, ZIP, and PNG). Instead of computing one bit per clock cycle,
-the engine operates on 32-bit words assembled from the FIFO, delivering results in a fraction of
-the time required by serial implementations.
+The design processes incoming data bytes through a serial CRC-32 engine that computes one bit per
+clock cycle (8 cycles per byte). This approach minimizes logic area while remaining fully functional
+within a single 1x1 Tiny Tapeout tile.
 
 The internal blocks are:
 
-- **2 KiB FIFO buffer** (2048 bytes): stores incoming data frames while the CRC engine processes
-  them. Implemented as a circular register array with write/read pointers. This allows the host
-  processor to write a complete data block and then trigger verification without holding the bus.
-- **Parallel CRC-32 engine**: accepts 32-bit words and updates the CRC register in a single clock
-  cycle using a combinational XOR tree derived from the standard polynomial equations.
-- **Control FSM**: orchestrates the flow — waiting for data, assembling 4-byte words from the FIFO,
-  feeding them to the CRC engine, and finalizing the result (bit-inverted per the Ethernet standard).
-- **Register interface**: exposes internal state (FIFO occupancy, CRC result bytes, channel status)
-  through a simple 4-bit address / 8-bit data bus accessible from an external microcontroller.
-- **IRQ output**: signals when the CRC result is ready or when the FIFO is full, allowing
-  interrupt-driven operation without polling.
+**8-byte circular FIFO:** stores incoming data bytes written by the host via the bidirectional
+data bus. Implemented with 3-bit write/read pointers for natural modulo-8 wraparound. The host
+can write bytes while the CRC engine drains the FIFO concurrently.
+
+**Serial CRC-32 engine:** processes one bit per clock cycle using the reflected polynomial
+0xEDB88320 (standard IEEE 802.3, same as Ethernet). Each byte takes 8 cycles. The engine XORs
+the incoming byte with the low 8 bits of the CRC register, then shifts through all 8 bits
+applying the polynomial feedback on each step.
+
+**Control FSM:** five-state machine (IDLE → LOAD → BITS → FINALIZE → DONE) that coordinates
+FIFO reads, bit-by-bit CRC updates, and result finalization. The CRC register is initialized to
+0xFFFFFFFF and the final result is bit-inverted per the Ethernet standard.
+
+**Register interface:** exposes internal state through a 4-bit address / 8-bit data bus:
+address 0 returns status (`{4'b0, irq, fifo_count[2:0]}`), addresses 1–4 return the four CRC
+result bytes (LSB first).
+
+**IRQ output:** goes high when the CRC result is ready (`crc_done`) or when the FIFO is full,
+enabling interrupt-driven operation.
+
+**VGA display (25 MHz, 640×480):** provides a real-time visual readout of the engine state
+directly on a monitor via the TinyVGA PMOD:
+
+- **Rows 0–79:** solid blue header bar.
+- **Rows 90–149:** green FIFO occupancy bar — width scales with `fifo_count` (each unit = 64 px).
+  Empty FIFO shows dark green background; occupied bytes light up bright green.
+- **Rows 160–219:** four 160 px status blocks showing FSM state (color-coded: grey=IDLE,
+  yellow=LOAD, green=BITS, orange=FINALIZE, blue=DONE), IRQ flag (red when active), enable
+  signal (cyan when active), and rst_crc signal (magenta when active).
+- **Rows 230–309:** eight 80 px cells displaying the low 8 bits of the CRC register in real time
+  (orange = bit 1, dark blue = bit 0).
+- **Remaining rows:** black background.
+
+### FSM state transitions
+
+- IDLE  →(FIFO not empty AND enable)→  LOAD
+- LOAD  →(always)→  BITS
+- BITS  →(bit_cnt == 7, FIFO empty)→   FINALIZE
+- BITS  →(bit_cnt == 7, FIFO not empty)→ LOAD
+- FINALIZE →(always)→  DONE
+- DONE  →(wr AND enable)→  IDLE
+
 
 ### Data flow
 
-1. The host writes data bytes to the FIFO via `ui_in` (write strobe + address 0).
-2. Once at least 4 bytes are available, the FSM assembles a 32-bit word and feeds it to the CRC engine.
-3. The engine updates its internal register in one clock cycle.
-4. Steps 2–3 repeat until the FIFO is drained.
-5. The final CRC value is bit-inverted and stored in result registers.
-6. The `irq` output goes high to notify the host processor.
-7. The host reads the 4-byte CRC result from registers via `ui_in` (read strobe + addresses 1–4).
-
-### Why CRC-32 matters for edge AI
-
-An intelligent agent operating on a noisy edge environment (wireless links, long cables, cosmic
-ray bit flips in SRAM) must verify that sensor data and model weights are intact before using them
-for inference. A hardware CRC engine offloads this task from the main processor, running at wire
-speed without consuming CPU cycles.
+1. Host asserts `enable` (ui_in[6]) and writes data bytes into the FIFO by pulsing `wr`
+   (ui_in[0]) while placing the byte on `uio_in[7:0]`.
+2. The FSM detects a non-empty FIFO and transitions to LOAD, reading one byte from the FIFO and
+   XORing it into the CRC working register.
+3. The BITS state shifts through all 8 bits, applying the polynomial feedback on each cycle.
+4. Steps 2–3 repeat until the FIFO is drained, then FINALIZE inverts the CRC register.
+5. `irq` goes high (visible on the VGA panel and readable via the register interface).
+6. Host reads the 4-byte result from addresses 1–4 on the bidirectional data bus.
+7. A new write (`wr` pulse while in DONE state) resets `crc_done` and returns the FSM to IDLE.
 
 ## How to test
 
 ### Simulation
 
-Run the included CocoTB testbench:
+The testbench captures three VGA frames and compares them against reference images using CocoTB.
+On the first run, reference images are created automatically from the captured output.
 
 ```bash
 cd test
 make test
 ```
 
-A passing result confirms the module compiles and the interface is functional.
+A passing result confirms the VGA timing, the register interface, and the CRC engine compile and
+simulate correctly. On subsequent runs, the test compares pixel-by-pixel against the saved
+references and fails if any difference is detected.
 
 ### Hardware testing (once the chip is fabricated)
 
 **Required equipment:**
-- Tiny Tapeout demo board (or any FPGA with the bitstream loaded)
-- Microcontroller (Arduino, RP2040, or similar) connected to the chip's I/O pins
-- Optional: logic analyzer for signal inspection
+
+- Tiny Tapeout demo board (or FPGA with bitstream loaded)
+- TinyVGA PMOD connected to `uo_out` — plug it in to see the live display
+- Microcontroller (Arduino Uno, RP2040, ESP32, or similar) connected to `ui_in` and `uio`
+- Optional: logic analyzer for bus signal inspection
 
 **Step-by-step procedure:**
 
-1. Connect the microcontroller to the chip according to the pinout table below.
-2. Assert `enable` (ui_in[6] = 1) and release reset.
-3. Write a test message byte by byte:
-   - Set `addr` = 0 (ui_in[5:2] = 0000)
-   - Place the byte on the data bus
+1. Connect the TinyVGA PMOD to `uo_out` and a VGA monitor. You should immediately see the
+   blue header and the status panel on screen.
+2. Connect the microcontroller to `ui_in` and `uio` per the pin table below.
+3. Assert `enable` (ui_in[6] = 1). The BITS block on the VGA display turns cyan.
+4. Write a test message byte by byte:
+   - Place the byte on `uio_in[7:0]`
    - Pulse `wr` (ui_in[0] = 1 for one clock cycle)
-   - Repeat for each byte of the message
-4. Wait for the `irq` output (uo_out[0]) to go high — this means the CRC is ready.
-5. Read the 4-byte result:
-   - Set `rd` = 1 (ui_in[1] = 1) and cycle through `addr` = 1, 2, 3, 4
-   - Collect the 4 bytes returned on the data bus
-6. Assemble the 32-bit CRC (byte 1 = LSB, byte 4 = MSB).
-7. Compare with the expected CRC calculated offline (e.g., using Python's `binascii.crc32()`).
-
-**Quick Python reference to compute expected CRC:**
+   - Repeat for each byte — the green FIFO bar grows on screen with each write
+5. Watch the VGA FSM panel cycle through LOAD → BITS → FINALIZE → DONE as the engine
+   processes the bytes. The CRC bit display updates in real time.
+6. When `irq` goes high (red block on VGA panel, or poll address 0 via the bus), the
+   result is ready.
+7. Read the 4-byte CRC result:
+   - Set `rd` = 1 (ui_in[1] = 1) and cycle `addr` through 1, 2, 3, 4
+   - Collect the 4 bytes from `uio_out[7:0]`
+   - Byte at address 1 = CRC[7:0] (LSB), address 4 = CRC[31:24] (MSB)
+8. Compare with the expected CRC calculated in Python:
 
 ```python
+import struct
+# binascii.crc32 uses the same polynomial (0xEDB88320)
 import binascii
 message = b"Hello"
-expected_crc = binascii.crc32(message) & 0xFFFFFFFF
-print(f"Expected CRC-32: 0x{expected_crc:08X}")
+expected = binascii.crc32(message) & 0xFFFFFFFF
+print(f"Expected CRC-32: 0x{expected:08X}")
 ```
 
-If the chip returns the same value, the engine is working correctly.
+9. To run a new calculation: assert `rst_crc` (ui_in[7] = 1) for one cycle to reset the
+   engine and FIFO, then repeat from step 4.
+
+**What you should see on the VGA monitor during a normal run:**
+
+| Phase | FIFO bar | FSM block color | CRC display |
+|-------|----------|-----------------|-------------|
+| Idle, no data | Empty (dark green) | Grey | All dark blue |
+| Writing bytes | Growing green bar | Grey (FIFO filling) | All dark blue |
+| Processing | Shrinking bar | Yellow/Green cycling | Updating |
+| Done | Empty | Blue | Final CRC bits |
+| IRQ active | Empty | Blue | Final CRC bits, IRQ block = red |
 
 ## External hardware
 
-- A microcontroller (Arduino Uno, Raspberry Pi Pico, ESP32, or similar) to drive the input bus
-  and read CRC results.
-- Optional LEDs on `uo_out[1:2]` (error flags) to visually indicate data integrity errors.
-- Optional logic analyzer (Saleae or equivalent) for debugging the bus timing.
+- **TinyVGA PMOD** (required for the visual display) — connects to `uo_out`.
+- **Microcontroller** (Arduino Uno, RP2040, ESP32, or similar) to drive `ui_in` and the
+  bidirectional data bus `uio`.
+- Optional: LEDs on the IRQ signal (readable from address 0, bit 3) for a simple
+  interrupt indicator without a monitor.
+- Optional: logic analyzer for debugging bus timing.
 
-No additional hardware is required to use the module on the Tiny Tapeout demo FPGA board.
+No additional hardware beyond the PMOD and a microcontroller is needed to use the full
+functionality of the module.
 
 ## Pin description
 
 | Pin | Direction | Function |
 |-----|-----------|----------|
-| `ui_in[0]` | Input | `wr` — write strobe: pulse high to write `data` into FIFO (when addr=0) |
-| `ui_in[1]` | Input | `rd` — read strobe: pulse high to read register at `addr` |
-| `ui_in[5:2]` | Input | `addr[3:0]` — register address (0=FIFO write, 1–4=CRC result bytes, 9=status) |
-| `ui_in[6]` | Input | `enable` — enables CRC processing; must be high during operation |
-| `ui_in[7]` | Input | reserved |
-| `uo_out[0]` | Output | `irq` — goes high when CRC result is ready or FIFO is full |
-| `uo_out[2:1]` | Output | `error_flags[1:0]` — one bit per channel, high if a mismatch is detected |
-| `uo_out[7:3]` | Output | reserved (tied low) |
-| `uio[7:0]` | Bidir | `data[7:0]` — data bus: input when writing, output when reading |
+| `ui_in[0]` | Input | `wr` — write strobe: pulse high to push `uio_in` byte into the FIFO |
+| `ui_in[1]` | Input | `rd` — read strobe: pulse high to output register `addr` on `uio_out` |
+| `ui_in[5:2]` | Input | `addr[3:0]` — register select: 0 = status, 1–4 = CRC result bytes (LSB first) |
+| `ui_in[6]` | Input | `enable` — enables FIFO writes and CRC processing; must be high during operation |
+| `ui_in[7]` | Input | `rst_crc` — soft reset: clears FIFO, CRC register, and FSM (synchronous) |
+| `uo_out[7]` | Output | `HSync` — VGA horizontal sync (TinyVGA PMOD) |
+| `uo_out[6]` | Output | `B0` — VGA blue bit 0 (TinyVGA PMOD) |
+| `uo_out[5]` | Output | `G0` — VGA green bit 0 (TinyVGA PMOD) |
+| `uo_out[4]` | Output | `R0` — VGA red bit 0 (TinyVGA PMOD) |
+| `uo_out[3]` | Output | `VSync` — VGA vertical sync (TinyVGA PMOD) |
+| `uo_out[2]` | Output | `B1` — VGA blue bit 1 (TinyVGA PMOD) |
+| `uo_out[1]` | Output | `G1` — VGA green bit 1 (TinyVGA PMOD) |
+| `uo_out[0]` | Output | `R1` — VGA red bit 1 (TinyVGA PMOD) |
+| `uio[7:0]` | Bidir | `data[7:0]` — data bus: driven by host when writing, driven by chip when reading |
 
-## Performance and area
+## Performance
 
 | Parameter | Value |
 |-----------|-------|
-| Logic cells (estimated) | ~20,000 (~40% of Tiny Tapeout limit) |
-| Maximum clock frequency | 50 MHz |
-| Operating clock | 25 MHz |
-| Throughput | 32 bits/cycle → 800 Mbps at 25 MHz |
-| FIFO capacity | 2,048 bytes |
-| CRC polynomial | 0x04C11DB7 (Ethernet/IEEE 802.3) |
-| Estimated power | < 10 mW active, < 1 µW idle |
+| CRC polynomial | 0xEDB88320 (IEEE 802.3 / Ethernet, reflected) |
+| CRC width | 32 bits |
+| Processing rate | 1 bit per cycle → 8 cycles per byte |
+| Throughput at 25 MHz | ~3.125 Mbps (25 MHz / 8) |
+| FIFO depth | 8 bytes |
+| VGA resolution | 640 × 480 @ 25 MHz |
+| Clock domain | Single (25 MHz) |
+| Tile size | 1 × 1 |
 
 ## Author
 
-**Jorge Luis Chuquimia Parra**  
+**Jorge Luis Chuquimia Parra**
 GitHub: [27jorge05](https://github.com/27jorge05)
