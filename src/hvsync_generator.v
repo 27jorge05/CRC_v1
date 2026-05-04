@@ -1,34 +1,37 @@
 `ifndef HVSYNC_GENERATOR_H
 `define HVSYNC_GENERATOR_H
-
 /*
-Video sync generator, used to drive a VGA monitor.
-Timing from: https://en.wikipedia.org/wiki/Video_Graphics_Array
-To use:
-- Wire the hsync and vsync signals to top level outputs
-- Add a 3-bit (or more) "rgb" output to the top level
-*/
+ * Video sync generator, used to drive a VGA monitor.
+ * Timing from: https://en.wikipedia.org/wiki/Video_Graphics_Array
+ *
+ * FIX: hsync y vsync ahora son combinacionales (wire) en lugar de
+ * registrados (reg). Esto elimina el off-by-one de 1 ciclo que causaba
+ * "hsync incorrecto en pixel 655" en los tests cocotb de TinyTapeout.
+ *
+ * Con hsync registrado:  el test ve el sync un ciclo antes (pixel 655)
+ * Con hsync combinacional: el test ve el sync exactamente en pixel 656
+ */
 
 module hvsync_generator(clk, reset, hsync, vsync, display_on, hpos, vpos);
-
   input clk;
   input reset;
-  output reg hsync, vsync;
+  output wire hsync, vsync;       // wire combinacional, NO reg registrado
   output display_on;
   output reg [9:0] hpos;
   output reg [9:0] vpos;
 
-  // declarations for TV-simulator sync parameters
   // horizontal constants
   parameter H_DISPLAY       = 640; // horizontal display width
   parameter H_BACK          =  48; // horizontal left border (back porch)
   parameter H_FRONT         =  16; // horizontal right border (front porch)
   parameter H_SYNC          =  96; // horizontal sync width
+
   // vertical constants
   parameter V_DISPLAY       = 480; // vertical display height
   parameter V_TOP           =  33; // vertical top border
   parameter V_BOTTOM        =  10; // vertical bottom border
   parameter V_SYNC          =   2; // vertical sync # lines
+
   // derived constants
   parameter H_SYNC_START    = H_DISPLAY + H_FRONT;
   parameter H_SYNC_END      = H_DISPLAY + H_FRONT + H_SYNC - 1;
@@ -37,33 +40,33 @@ module hvsync_generator(clk, reset, hsync, vsync, display_on, hpos, vpos);
   parameter V_SYNC_END      = V_DISPLAY + V_BOTTOM + V_SYNC - 1;
   parameter V_MAX           = V_DISPLAY + V_TOP + V_BOTTOM + V_SYNC - 1;
 
-  wire hmaxxed = (hpos == H_MAX) || reset;	// set when hpos is maximum
-  wire vmaxxed = (vpos == V_MAX) || reset;	// set when vpos is maximum
-  
+  wire hmaxxed = (hpos == H_MAX) || reset;
+  wire vmaxxed = (vpos == V_MAX) || reset;
+
+  // hsync y vsync COMBINACIONALES — sin pipeline de 1 ciclo
+  assign hsync = ~(hpos >= H_SYNC_START && hpos <= H_SYNC_END);
+  assign vsync = ~(vpos >= V_SYNC_START && vpos <= V_SYNC_END);
+
   // horizontal position counter
-  always @(posedge clk)
-  begin
-    hsync <= ~(hpos>=H_SYNC_START && hpos<=H_SYNC_END);
-    if(hmaxxed)
+  always @(posedge clk) begin
+    if (hmaxxed)
       hpos <= 0;
     else
       hpos <= hpos + 1;
   end
 
   // vertical position counter
-  always @(posedge clk)
-  begin
-    vsync <= ~(vpos>=V_SYNC_START && vpos<=V_SYNC_END);
-    if(hmaxxed)
+  always @(posedge clk) begin
+    if (hmaxxed) begin
       if (vmaxxed)
         vpos <= 0;
       else
         vpos <= vpos + 1;
+    end
   end
-  
-  // display_on is set when beam is in "safe" visible frame
-  assign display_on = (hpos<H_DISPLAY) && (vpos<V_DISPLAY);
+
+  // display_on activo dentro del area visible
+  assign display_on = (hpos < H_DISPLAY) && (vpos < V_DISPLAY);
 
 endmodule
-
 `endif
