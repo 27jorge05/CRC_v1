@@ -105,8 +105,14 @@ async def test_project(dut):
         return frame
 
     # Start capturing
-
     os.makedirs("output", exist_ok=True)
+
+    # Saltar un frame completo antes de capturar.
+    # En simulacion gate-level los flip-flops sin reset arrancan en X y necesitan
+    # un ciclo completo (H_TOTAL * V_TOTAL = 420 000 ciclos a 25 MHz) para que toda
+    # la logica combinacional (pix_x/pix_y -> colores -> uo_out) se estabilice.
+    # En simulacion RTL esto no es necesario pero tampoco hace daño.
+    await skip_frame(-1)
 
     for i in range(CAPTURE_FRAMES):
         frame = await capture_frame(i)
