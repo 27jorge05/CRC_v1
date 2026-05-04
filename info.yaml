@@ -1,6 +1,6 @@
 # Tiny Tapeout project information
 project:
-  title:        "CRC_FIFO: Motor CRC-32 con FIFO de 8 bytes"
+  title: "CRC_FIFO: CRC-32 Engine with 8-Byte FIFO and VGA Display"
   author:       "Jorge Luis Chuquimia Parra"
   discord:      ""
   description:  >
