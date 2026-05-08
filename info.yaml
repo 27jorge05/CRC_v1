@@ -1,6 +1,6 @@
 # Tiny Tapeout project information
 project:
-  title: "CRC_FIFO: CRC-32 Engine with 8-Byte FIFO and VGA Display"
+  title: "IEEE CRC_FIFO: CRC-32 Engine with 8-Byte FIFO and VGA Displa"
   author:       "Jorge Luis Chuquimia Parra"
   discord:      ""
   description:  >
